@@ -1484,7 +1484,10 @@ def open_logs():
     mpstate.logfile_name = logfile
     mpstate.logfile = open(logfile, mode=mode)
     mpstate.logfile_raw = open(logfile+'.raw', mode=mode)
-    print("Logging to %s" % logfile)
+    if not opts.disable_logging:
+        print("Logging to %s" % logfile)
+    else:
+        print("Logging disabled")
 
     # queues for logging
     mpstate.logqueue = Queue.Queue()
@@ -1493,9 +1496,10 @@ def open_logs():
     # use a separate thread for writing to the logfile to prevent
     # delays during disk writes (important as delays can be long if camera
     # app is running)
-    t = threading.Thread(target=log_writer)
-    t.daemon = True
-    t.start()
+    if not opts.disable_logging:
+        t = threading.Thread(target=log_writer)
+        t.daemon = True
+        t.start()
 
 def set_stream_rates():
     '''set mavlink stream rates'''
@@ -1745,7 +1749,10 @@ if __name__ == '__main__':
     parser.add_option("--auto-protocol", action='store_true', default=False, help="Auto detect MAVLink protocol version")
     parser.add_option("--nowait", action='store_true', default=False, help="don't wait for HEARTBEAT on startup")
     parser.add_option("--continue", dest='continue_mode', action='store_true', default=False, help="continue logs")
-
+    parser.add_option("--embedded", action='store_true', default=False,
+                      help="disables user input loop for embedded applications")
+    parser.add_option("--disable-logging", dest="disable_logging", action='store_true', default=False,
+                      help="disables logging thread")
     (opts, args) = parser.parse_args()
 
     if opts.mav09:
@@ -1878,15 +1885,23 @@ Auto-detected serial ports are:
             process_stdin(c)
 
     # run main loop as a thread
-    mpstate.status.thread = threading.Thread(target=main_loop)
-    mpstate.status.thread.daemon = True
-    mpstate.status.thread.start()
-
-    # use main program for input. This ensures the terminal cleans
-    # up on exit
-    try:
-        input_loop()
-    except KeyboardInterrupt:
-        print("exiting")
-        mpstate.status.exit = True
-        sys.exit(1)
+    if not opts.embedded:
+        mpstate.status.thread = threading.Thread(target=main_loop)
+        mpstate.status.thread.daemon = True
+        mpstate.status.thread.start()
+        
+        # use main program for input. This ensures the terminal cleans
+        # up on exit
+        try:
+            input_loop()
+        except KeyboardInterrupt:
+            print("exiting")
+            mpstate.status.exit = True
+            sys.exit(1)
+    else:
+        try:
+            main_loop()
+        except KeyboardInterrupt:
+            print("exiting")
+            mpstate.status.exit = True
+            sys.exit(1)
