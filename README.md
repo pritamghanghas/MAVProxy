@@ -30,6 +30,16 @@ What does this code do?
 	quadcopter with one camera looking straight downwards, but
 	other configurations are possible.
 
+Command-line flags
+
+The version of mavproxy.py located in the same folder as this README
+file has new command line options that optimize mavproxy for
+embedded applications, such as running this vision module on a 
+Raspberry Pi board or other lightweight computer attached to the UAV.
+These options are:
+
+	--embedded		Disables the user input thread
+	--disable-logging	Disables the log writer thread
 
 
 Code Dependecies
