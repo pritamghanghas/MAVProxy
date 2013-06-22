@@ -1,6 +1,6 @@
 ''' 
 mavproxy_vision.py
-LAST UPDATED 2013/05/18 2:00 PM
+LAST UPDATED 2013/06/21 2:00 PM
 written by Colin Doolittle and David Wurtz
 
 Portland State University 2013 Capstone Project
@@ -9,7 +9,7 @@ By importing this module in mavproxy.py, the user can engage/disengage a
 color-based computer vision system on channel 5, and use channel 6 to select
 which color to track.
 
-Released under the GNU GPL licence, maybe
+Released under the GNU GPL licence
 '''
 
 from cv2 import *
@@ -22,6 +22,7 @@ import pickle
 import threading
 import RPi.GPIO as GPIO
 
+# only for Raspberry Pi LED indicator
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(11,GPIO.OUT)
 
@@ -229,29 +230,20 @@ def track():
     xvariance = var(x_ccor)
     xpeakval = x_maxVal
     x90peakwidth = peak_width(x_ccor[0], x_maxLoc[0], .90)
-    #x75peakwidth = peak_width(x_ccor[0], x_maxLoc[0], .75)
-    #x50peakwidth = peak_width(x_ccor[0], x_maxLoc[0], .50)
     ymean = mean(y_ccor)
     yvariance = var(y_ccor)
     ypeakval = y_maxVal
     y90peakwidth = peak_width(y_ccor, y_maxLoc[1], .90)
-    #y75peakwidth = peak_width(y_ccor, y_maxLoc[1], .75)
-    #y50peakwidth = peak_width(y_ccor, y_maxLoc[1], .50)
-    #sumpixels = sum(x_ccor)
+    
 
     features =[ xmean,
                 xvariance,
                 xpeakval,
                 x90peakwidth,
-                #x75peakwidth,
-                #x50peakwidth,
                 ymean,
                 yvariance,
                 ypeakval,
                 y90peakwidth
-                #y75peakwidth,
-                #y50peakwidth,
-                #sumpixels
                 ]
 
     # determine if target is in frame or not
@@ -259,31 +251,6 @@ def track():
         mpstate.vs.target_in_frame = True
     else:
         mpstate.vs.target_in_frame = False
-
-    
-
-    #dt = time() - mpstate.vs.t
-    #mpstate.vs.t = time()
-
-    #print 'time:	', dt
-        
-    # scale pixel location to normalized cartesian coordinate plane 
-    # x_cart = (x_coord - mpstate.vs.HALF_CAPTURE_WIDTH)/mpstate.vs.HALF_CAPTURE_WIDTH + 0.0001
-    # y_cart = (mpstate.vs.HALF_CAPTURE_HEIGHT - y_coord)/mpstate.vs.HALF_CAPTURE_HEIGHT
-
-    # angle = arctan(y_cart/x_cart)
-
-    # if x_cart < 0:
-    #     angle = angle + pi
-
-    # x_scaled = cos(angle)
-    # y_scaled = sin(angle)
-
-    # create roll and pitch weights
-    # roll_pwm = int(mpstate.vs.ch1_trim + x_scaled*50)
-    # pitch_pwm = int(mpstate.vs.ch2_trim - y_scaled*50)
-    # brake_roll_pwm = int(mpstate.vs.ch1_trim + (-1)*x_scaled*50)
-    # brake_pitch_pwm = int(mpstate.vs.ch2_trim - (-1)*y_scaled*50)
 
     if mpstate.vs.target_in_frame == True and mpstate.status.flightmode == 'ALT_HOLD':
         
