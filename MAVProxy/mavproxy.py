@@ -123,8 +123,8 @@ class MPState(object):
         from MAVProxy.modules.lib.mp_settings import MPSettings, MPSetting
         self.settings = MPSettings(
             [ MPSetting('link', int, 1, 'Primary Link', tab='Link', range=(0,4), increment=1),
-              MPSetting('streamrate', int, 4, 'Stream rate link1', range=(-1,20), increment=1),
-              MPSetting('streamrate2', int, 4, 'Stream rate link2', range=(-1,20), increment=1),
+              MPSetting('streamrate', int, 4, 'Stream rate link1', range=(-1,100), increment=1),
+              MPSetting('streamrate2', int, 4, 'Stream rate link2', range=(-1,100), increment=1),
               MPSetting('heartbeat', int, 1, 'Heartbeat rate', range=(0,5), increment=1),
               MPSetting('mavfwd', bool, True, 'Allow forwarded control'),
               MPSetting('mavfwd_rate', bool, False, 'Allow forwarded rate control'),
@@ -416,6 +416,14 @@ command_map = {
     'alias'   : (cmd_alias,    'command aliases')
     }
 
+def shlex_quotes(value):
+    '''see http://stackoverflow.com/questions/6868382/python-shlex-split-ignore-single-quotes'''
+    lex = shlex.shlex(value)
+    lex.quotes = '"'
+    lex.whitespace_split = True
+    lex.commenters = ''
+    return list(lex)
+
 def process_stdin(line):
     '''handle commands from user'''
     if line is None:
@@ -445,7 +453,7 @@ def process_stdin(line):
     if not line:
         return
 
-    args = shlex.split(line)
+    args = shlex_quotes(line)
     cmd = args[0]
     while cmd in mpstate.aliases:
         line = mpstate.aliases[cmd]
