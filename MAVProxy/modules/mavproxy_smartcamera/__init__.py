@@ -246,7 +246,7 @@ class SmartCameraModule(mp_module.MPModule):
 
 #****************************************************************************
 #   Method Name     : __vCmdSetCamShutterSpeed
-#
+#__vDecodeDIGICAMControl
 #   Description     : Sets the shutter speed for the camera
 #
 #   Parameters      : Shutter speed, Cam Number
@@ -443,7 +443,7 @@ class SmartCameraModule(mp_module.MPModule):
             print ("Got Message camera_status")
         if mtype == "CAMERA_FEEDBACK":
             print ("Got Message camera_feedback")
-            '''self.__vCmdCamTrigger(m)'''
+            self.__vCmdCamTrigger(m)
         if mtype == "COMMAND_LONG":
             if m.command == mavutil.mavlink.MAV_CMD_DO_DIGICAM_CONFIGURE:
                 print ("Got Message Digicam_configure")
