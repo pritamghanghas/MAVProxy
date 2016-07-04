@@ -117,13 +117,13 @@ class dataflash_logger(mp_module.MPModule):
 
     def status(self):
         '''returns information about module'''
-        transfered = self.download - self.prev_download
+        transferred = self.download - self.prev_download
         now = time.time()
         interval = now - self.last_status_time
         self.last_status_time = now
         return("DFLogger: %(state)s Rate(%(interval)ds):%(rate).3fkB/s Block:%(block_cnt)d Missing:%(missing)d Fixed:%(fixed)d Abandoned:%(abandoned)d" %
               {"interval": interval,
-               "rate": transfered/(interval*1000),
+               "rate": transferred/(interval*1000),
                "block_cnt": self.last_seqno,
                "missing": len(self.missing_blocks),
                "fixed": self.missing_found,
@@ -234,7 +234,7 @@ class dataflash_logger(mp_module.MPModule):
 
         if self.log_settings.verbose:
             print("DFLogger: Sending start packet")
-       
+
         target_sys = self.log_settings.df_target_system
         target_comp = self.log_settings.df_target_component
         self.master.mav.remote_log_block_status_send(target_sys,
@@ -267,23 +267,23 @@ class dataflash_logger(mp_module.MPModule):
                     print("DFLogger: Received data packet - starting new log")
                 self.start_new_log()
                 self.sender = (m.get_srcSystem(), m.get_srcComponent())
-    
+
             if self.sender is None:
                 # No connection at the moment, and this packet did not start one
                 return
-    
+
             if self.stopped:
                 # send a stop packet every second until the other end gets the idea:
                 self.tell_sender_to_stop(m)
                 return
-    
+
             if self.sender is not None:
                 size = len(m.data)
                 data = ''.join(str(chr(x)) for x in m.data[:size])
                 ofs = size*(m.seqno)
                 self.logfile.seek(ofs)
                 self.logfile.write(data)
-    
+
                 if m.seqno in self.missing_blocks:
                     if self.log_settings.verbose:
                         print("DFLogger: Received missing block: %d" % (m.seqno,))

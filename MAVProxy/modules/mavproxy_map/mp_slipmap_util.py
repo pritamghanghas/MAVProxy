@@ -63,7 +63,7 @@ class SlipObject:
 
     def clicked(self, px, py):
         '''check if a click on px,py should be considered a click
-        on the object. Return None if definately not a click,
+        on the object. Return None if definitely not a click,
         otherwise return the distance of the click, smaller being nearer
         '''
         return None
@@ -232,7 +232,7 @@ class SlipGrid(SlipObject):
                 spacing *= 10
             else:
                 break
-        
+
         for i in range(count*2+2):
             pos1 = mp_util.gps_newpos(start[0], start[1], 90, i*spacing)
             pos3 = mp_util.gps_newpos(pos1[0], pos1[1], 0, 3*count*spacing)
