@@ -16,6 +16,7 @@ import sc_config
 import os
 from gi.repository import GExiv2
 from subprocess import call
+import picamera
 
 class PiCam:
 
@@ -29,8 +30,8 @@ class PiCam:
         self.config_group = "camera%d" % self.instance
 
         # get image resolution
-        self.img_width = sc_config.config.get_integer(self.config_group,'width',640)
-        self.img_height = sc_config.config.get_integer(self.config_group,'height',480)
+        self.img_width = sc_config.config.get_integer(self.config_group,'width',3280)
+        self.img_height = sc_config.config.get_integer(self.config_group,'height',2464)
         self.camera_name = sc_config.config.get_string(self.config_group, 'camera_name', 'picam')
         self.media_dir = os.path.expanduser(sc_config.config.get_string('general', 'media_dir', '~/media'))
         self.photos_dir = os.path.join(self.media_dir, self.camera_name, 'photos')
@@ -45,6 +46,9 @@ class PiCam:
 
         # background image processing variables
         self.img_counter = 0        # num images requested so far
+
+        self.camera = picamera.PiCamera()
+        self.camera.resolution = (self.img_width, self.img_height)
 
         # latest image captured
         self.latest_image = None
@@ -67,7 +71,7 @@ class PiCam:
         imgfilename = "img-%d.jpg" % (self.get_image_counter())
         complete_filename = os.path.join(session_dir,imgfilename)
         print (complete_filename)
-        cv2.imwrite(complete_filename, self.latest_image)
+        self.camera.capture(complete_filename)
         exif = GExiv2.Metadata(complete_filename)
         exif.set_gps_info(self.vehicleLon, self.vehicleLat, self.vehicleAMSL)
         exif.save_file()
@@ -93,7 +97,8 @@ class PiCam:
             # send request to image capture for image
             if self.take_picture():
                 # display image
-                cv2.imshow ('image_display', self.get_latest_image())
+                print("took one picture")
+#                cv2.imshow ('image_display', self.get_latest_image())
             else:
                 print "no image"
 
@@ -107,5 +112,5 @@ class PiCam:
 
 # run test run from the command line
 if __name__ == "__main__":
-    sc_webcam0 = SmartCameraWebCam(0)
+    sc_webcam0 = PiCam(1)
     sc_webcam0.main()

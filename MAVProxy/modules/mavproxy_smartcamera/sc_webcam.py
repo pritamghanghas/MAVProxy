@@ -89,8 +89,8 @@ class SmartCameraWebCam:
         # setup video capture
         print("Taking Picture")
         self.camera = cv2.VideoCapture(self.instance)
-#        self.camera.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH,self.img_width)
-#        self.camera.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT,self.img_height)
+        self.camera.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH,self.img_width)
+        self.camera.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT,self.img_height)
 
         # check we can connect to camera
         if not self.camera.isOpened():
