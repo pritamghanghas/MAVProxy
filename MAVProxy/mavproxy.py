@@ -13,6 +13,7 @@ import serial, Queue, select
 import traceback
 import select
 import shlex
+import platform
 
 from MAVProxy.modules.lib import textconsole
 from MAVProxy.modules.lib import rline
@@ -45,7 +46,6 @@ class MPStatus(object):
         self.setup_mode = opts.setup
         self.mav_error = 0
         self.altitude = 0
-        self.last_altitude_announce = 0.0
         self.last_distance_announce = 0.0
         self.exit = False
         self.flightmode = 'MAV'
@@ -155,7 +155,13 @@ class MPState(object):
               MPSetting('target_system', int, 0, 'MAVLink target system', range=(0,255), increment=1),
               MPSetting('target_component', int, 0, 'MAVLink target component', range=(0,255), increment=1),
               MPSetting('state_basedir', str, None, 'base directory for logs and aircraft directories'),
-              MPSetting('allow_unsigned', bool, True, 'whether unsigned packets will be accepted')
+              MPSetting('allow_unsigned', bool, True, 'whether unsigned packets will be accepted'),
+
+              MPSetting('dist_unit', str, 'm', 'distance unit', choice=['m', 'nm', 'miles'], tab='Units'),
+              MPSetting('height_unit', str, 'm', 'height unit', choice=['m', 'feet']),
+              MPSetting('speed_unit', str, 'm/s', 'height unit', choice=['m/s', 'knots', 'mph']),
+
+              MPSetting('vehicle_name', str, '', 'Vehicle Name', tab='Vehicle'),
             ])
 
         self.completions = {
@@ -589,8 +595,6 @@ def log_paths():
     '''Returns tuple (logdir, telemetry_log_filepath, raw_telemetry_log_filepath)'''
     if opts.aircraft is not None:
         dirname = ""
-        if(opts.daemon):
-            dirname = '/var/log/'
         if opts.mission is not None:
             print(opts.mission)
             dirname += "%s/logs/%s/Mission%s" % (opts.aircraft, time.strftime("%Y-%m-%d"), opts.mission)
@@ -619,10 +623,7 @@ def log_paths():
         if not os.path.isabs(dir_path) and mpstate.settings.state_basedir is not None:
             dir_path = os.path.join(mpstate.settings.state_basedir,dir_path)
 
-        if(opts.daemon):
-            logdir = '/var/log'
-        else:
-            logdir = dir_path
+        logdir = dir_path
 
     mkdir_p(logdir)
     return (logdir,
@@ -644,11 +645,13 @@ def open_telemetry_logs(logpath_telem, logpath_telem_raw):
         print("Telemetry log: %s" % logpath_telem)
 
         #make sure there's enough free disk space for the logfile (>200Mb)
-        stat = os.statvfs(logpath_telem)
-        if stat.f_bfree*stat.f_bsize < 209715200:
-            print("ERROR: Not enough free disk space for logfile")
-            mpstate.status.exit = True
-            return
+        #statvfs doesn't work in Windows
+        if platform.system() != 'Windows':
+            stat = os.statvfs(logpath_telem)
+            if stat.f_bfree*stat.f_bsize < 209715200:
+                print("ERROR: Not enough free disk space for logfile")
+                mpstate.status.exit = True
+                return
 
         # use a separate thread for writing to the logfile to prevent
         # delays during disk writes (important as delays can be long if camera
@@ -906,7 +909,8 @@ if __name__ == '__main__':
         default=[],
         help='Load the specified module. Can be used multiple times, or with a comma separated list')
     parser.add_option("--mav09", action='store_true', default=False, help="Use MAVLink protocol 0.9")
-    parser.add_option("--mav20", action='store_true', default=False, help="Use MAVLink protocol 2.0")
+    parser.add_option("--mav10", action='store_true', default=False, help="Use MAVLink protocol 1.0")
+    parser.add_option("--mav20", action='store_true', default=True, help="Use MAVLink protocol 2.0")
     parser.add_option("--auto-protocol", action='store_true', default=False, help="Auto detect MAVLink protocol version")
     parser.add_option("--nowait", action='store_true', default=False, help="don't wait for HEARTBEAT on startup")
     parser.add_option("-c", "--continue", dest='continue_mode', action='store_true', default=False, help="continue logs")
@@ -928,7 +932,7 @@ if __name__ == '__main__':
 
     if opts.mav09:
         os.environ['MAVLINK09'] = '1'
-    if opts.mav20:
+    if opts.mav20 and not opts.mav10:
         os.environ['MAVLINK20'] = '1'
     from pymavlink import mavutil, mavparm
     mavutil.set_dialect(opts.dialect)

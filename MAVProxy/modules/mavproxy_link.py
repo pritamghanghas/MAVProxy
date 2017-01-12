@@ -33,6 +33,7 @@ class LinkModule(mp_module.MPModule):
         self.no_fwd_types.add("BAD_DATA")
         self.add_completion_function('(SERIALPORT)', self.complete_serial_ports)
         self.add_completion_function('(LINKS)', self.complete_links)
+        self.last_altitude_announce = 0.0
 
         self.menu_added_console = False
         if mp_util.has_wxpython:
@@ -99,8 +100,15 @@ class LinkModule(mp_module.MPModule):
                 status = "OK"
             sign_string = ''
             try:
-                sign_string = ", unsigned %u reject %u" % (master.mav.signing.unsigned_count, master.mav.signing.reject_count)
-            except Exception:
+                if master.mav.signing.sig_count:
+                    if master.mav.signing.secret_key is None:
+                        # unsigned/reject counts are not updated if we
+                        # don't have a signing secret
+                        sign_string = ", (no-signing-secret)"
+                    else:
+                        sign_string = ", unsigned %u reject %u" % (master.mav.signing.unsigned_count, master.mav.signing.reject_count)
+            except AttributeError as e:
+                # some mav objects may not have a "signing" attribute
                 pass
             print("link %u %s (%u packets, %.2fs delay, %u lost, %.1f%% loss%s)" % (master.linknum+1,
                                                                                     status,
@@ -228,6 +236,24 @@ class LinkModule(mp_module.MPModule):
         else:
             master.link_delayed = False
 
+    def colors_for_severity(self, severity):
+        severity_colors = {
+            # tuple is (fg, bg) (as in "white on red")
+            mavutil.mavlink.MAV_SEVERITY_EMERGENCY: ('white', 'red'),
+            mavutil.mavlink.MAV_SEVERITY_ALERT: ('white', 'red'),
+            mavutil.mavlink.MAV_SEVERITY_CRITICAL: ('white', 'red'),
+            mavutil.mavlink.MAV_SEVERITY_ERROR: ('black', 'orange'),
+            mavutil.mavlink.MAV_SEVERITY_WARNING: ('black', 'orange'),
+            mavutil.mavlink.MAV_SEVERITY_NOTICE: ('black', 'yellow'),
+            mavutil.mavlink.MAV_SEVERITY_INFO: ('white', 'green'),
+            mavutil.mavlink.MAV_SEVERITY_DEBUG: ('white', 'green'),
+        }
+        try:
+            return severity_colors[severity]
+        except Exception as e:
+            print("Exception: %s" % str(e))
+            return ('white', 'red')
+
     def report_altitude(self, altitude):
         '''possibly report a new altitude'''
         master = self.master
@@ -239,11 +265,12 @@ class LinkModule(mp_module.MPModule):
                 alt2 = self.mpstate.settings.basealt
                 altitude += alt2 - alt1
         self.status.altitude = altitude
+        altitude_converted = self.height_convert_units(altitude)
         if (int(self.mpstate.settings.altreadout) > 0 and
-            math.fabs(self.status.altitude - self.status.last_altitude_announce) >=
+            math.fabs(altitude_converted - self.last_altitude_announce) >=
             int(self.settings.altreadout)):
-            self.status.last_altitude_announce = self.status.altitude
-            rounded_alt = int(self.settings.altreadout) * ((self.settings.altreadout/2 + int(self.status.altitude)) / int(self.settings.altreadout))
+            self.last_altitude_announce = altitude_converted
+            rounded_alt = int(self.settings.altreadout) * ((self.settings.altreadout/2 + int(altitude_converted)) / int(self.settings.altreadout))
             self.say("height %u" % rounded_alt, priority='notification')
 
 
@@ -254,6 +281,8 @@ class LinkModule(mp_module.MPModule):
         sysid = m.get_srcSystem()
         if sysid in self.mpstate.sysid_outputs:
             self.mpstate.sysid_outputs[sysid].write(m.get_msgbuf())
+            if m.get_type() == "GLOBAL_POSITION_INT" and self.module('map') is not None:
+                self.module('map').set_secondary_vehicle_position(m)
             return
 
         if getattr(m, '_timestamp', None) is None:
@@ -322,7 +351,7 @@ class LinkModule(mp_module.MPModule):
             if master.flightmode != self.status.flightmode:
                 self.status.flightmode = master.flightmode
                 if self.mpstate.functions.input_handler is None:
-                    self.mpstate.rl.set_prompt(self.status.flightmode + "> ")
+                    self.set_prompt(self.status.flightmode + "> ")
 
             if master.flightmode != self.status.last_mode_announced and time.time() > self.status.last_mode_announce + 2:
                     self.status.last_mode_announce = time.time()
@@ -351,7 +380,8 @@ class LinkModule(mp_module.MPModule):
 
         elif mtype == 'STATUSTEXT':
             if m.text != self.status.last_apm_msg or time.time() > self.status.last_apm_msg_time+2:
-                self.mpstate.console.writeln("APM: %s" % m.text, bg='red')
+                (fg, bg) = self.colors_for_severity(m.severity)
+                self.mpstate.console.writeln("APM: %s" % m.text, bg=bg, fg=fg)
                 self.status.last_apm_msg = m.text
                 self.status.last_apm_msg_time = time.time()
 

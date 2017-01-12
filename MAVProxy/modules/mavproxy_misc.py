@@ -72,6 +72,8 @@ class MiscModule(mp_module.MPModule):
                          ["<add|remove|clear>"])
         self.add_command('version', self.cmd_version, "show version")
         self.add_command('rcbind', self.cmd_rcbind, "bind RC receiver")
+        self.add_command('led', self.cmd_led, "control board LED")
+        self.add_command('playtune', self.cmd_playtune, "play tune remotely")
         self.repeats = []
 
     def altitude_difference(self, pressure1, pressure2, ground_temp):
@@ -123,7 +125,10 @@ class MiscModule(mp_module.MPModule):
 
     def cmd_reboot(self, args):
         '''reboot autopilot'''
-        self.master.reboot_autopilot()
+        if len(args) > 0 and args[0] == 'bootloader':
+            self.master.reboot_autopilot(True)
+        else:
+            self.master.reboot_autopilot()
 
     def cmd_time(self, args):
         '''show autopilot time'''
@@ -181,6 +186,35 @@ class MiscModule(mp_module.MPModule):
                                           mavutil.mavlink.MAV_CMD_START_RX_PAIR,
                                           0,
                                           float(args[0]), 0, 0, 0, 0, 0, 0)
+
+    def cmd_led(self, args):
+        '''send LED pattern as override'''
+        if len(args) < 3:
+            print("Usage: led RED GREEN BLUE <RATE>")
+            return
+        pattern = [0] * 24
+        pattern[0] = int(args[0])
+        pattern[1] = int(args[1])
+        pattern[2] = int(args[2])
+        
+        if len(args) == 4:
+            plen = 4
+            pattern[3] = int(args[3])
+        else:
+            plen = 3
+            
+        self.master.mav.led_control_send(self.settings.target_system,
+                                         self.settings.target_component,
+                                         0, 0, plen, pattern)
+
+    def cmd_playtune(self, args):
+        '''send PLAY_TUNE message'''
+        if len(args) < 1:
+            print("Usage: playtune TUNE")
+            return
+        self.master.mav.play_tune_send(self.settings.target_system,
+                                       self.settings.target_component,
+                                       args[0])
 
     def cmd_repeat(self, args):
         '''repeat a command at regular intervals'''
