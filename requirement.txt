@@ -1,0 +1,17 @@
+a standalone python program, mavlink integration lateron
+- camera interface
+- streaming interface can be embedded in the camera objects 
+  - allowing all cameras to talk either MJPEG or h264, I don't think anything more 
+    than that is needed gstreamer can take care of it.
+  - adaptiveness in h264 and MJPEG coming later. 
+  - recording should be impliented from day one. intially the recorded stream and 
+    trasnmitted stream has to be same. But needs to be decoupled later on as Recording 
+    should be highest quality possible and streaming should be adaptive. 
+    Most cameras will take care of this anyway as they will record highest quality 
+    and give low quality on live view
+- should understand mavlink lateron. Don't have enough clarity on that. 
+  Anyway making it a mavlink component will be easy lateron. First get everything working
+- supported cameras from day one - sony qx series, sony block camera, sony camcorder, 
+  raspberry pi cam, FLIR Lepton and SJCAM wifi. In case of multiple camera objects exist, 
+  code should take care of firing them together or in parallel as most give API that is sync 
+  and waiting for one to return before firing another one will be disastorous.

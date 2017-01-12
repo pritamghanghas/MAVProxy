@@ -1,0 +1,19 @@
+#collect camera interface document here
+cameraInit()
+setGPSCoordinates()
+setAttitude()
+zoomIn()
+zoomOut()
+setExposureMode()
+setShutterSpeed()
+setAperture()
+setISO()
+trigger()
+startStreaming() // MJPEG/H264, port
+setIllumination() // None/visibile/IR
+setRecording() // only for handycam or video camera
+setElectronicStabilization() // true/false/on/off
+cameraID() // not sure whether this should be mavlink id or something else
+getStatus() // for sending down the mavlink whether recording is on, aperture etc
+-1 on anyvalue means unimplimented, returning false means the operation either failed or is not supported
+
