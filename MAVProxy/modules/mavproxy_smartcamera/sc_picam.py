@@ -13,7 +13,8 @@ import time
 import math
 import sc_config
 import os
-from requests import async
+import cv2
+from requests_futures.sessions import FuturesSession
 
 class PiCam:
     def __init__(self, instance):
@@ -24,6 +25,7 @@ class PiCam:
         # record instance
         self.instance = instance
         self.config_group = "camera%d" % self.instance
+        self.camera_name = 'PiCam'
 
         self.media_dir = os.path.expanduser(sc_config.config.get_string('general', 'media_dir', '~/media'))
         self.photos_dir = os.path.join(self.media_dir, self.camera_name, 'photos')
@@ -42,6 +44,8 @@ class PiCam:
         # latest image captured
         self.latest_image = None
 
+        self.session = FuturesSession()
+
     # __str__ - print position vector as string
     def __str__(self):
         return "SmartCameraWebCam Object "
@@ -55,7 +59,7 @@ class PiCam:
         session_dir = os.path.join(self.photos_dir, str(self.instance))
         imgfilename = "img-%d.jpg" % (self.get_image_counter())
         complete_filename = os.path.join(session_dir,imgfilename)
-        async.get('http://127.0.0.1:5555/capture?filename=%s&lat=%f&lon=%f&alt=%f' % (complete_filename,self.vehicleLat, self.vehicleLon, self.vehicleAMSL))
+        self.session.get('http://127.0.0.1:5555/capture?filename=%s&lat=%f&lon=%f&alt=%f' % (complete_filename,self.vehicleLat, self.vehicleLon, self.vehicleAMSL))
         return self.latest_image
 
     # get_image_counter - returns number of images captured since startup
@@ -75,21 +79,19 @@ class PiCam:
     def main(self):
 
         while True:
-            # send request to image capture for image
-            if self.take_picture():
-                # display image
-                print("took one picture")
-                # cv2.imshow ('image_display', self.get_latest_image())
-            else:
-                print "no image"
-
-            # check for ESC key being pressed
-            k = cv2.waitKey(5) & 0xFF
-            if k == 27:
-                break
+            try:
+                # send request to image capture for image
+                if self.take_picture():
+                    # display image
+                    print("took one picture")
+                    # cv2.imshow ('image_display', self.get_latest_image())
+                else:
+                    print "no image"
+            except KeyboardInterrupt:
+                break;
 
             # take a rest for a bit
-            time.sleep(0.01)
+            time.sleep(1)
 
 # run test run from the command line
 if __name__ == "__main__":
