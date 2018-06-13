@@ -9,7 +9,7 @@ import os
 import sys
 import re
 import optparse
-from wx_loader import wx
+from ..wx_loader import wx
 
 __version__ = 0.1
 __revision__ = '$Id$'
@@ -316,8 +316,8 @@ def sample_parse_args_issue1():
 
 def main():
     options, args = sample_parse_args_issue1()
-    print 'args: %s' % repr( args )
-    print 'options: %s' % repr( options )
+    print('args: %s' % repr( args ))
+    print('options: %s' % repr( options ))
 
 if '__main__' == __name__:
     main()

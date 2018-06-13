@@ -14,6 +14,7 @@ class CalibrationModule(mp_module.MPModule):
         self.add_command('compassmot', self.cmd_compassmot, 'do compass/motor interference calibration')
         self.add_command('calpress', self.cmd_calpressure,'calibrate pressure sensors')
         self.add_command('accelcal', self.cmd_accelcal, 'do 3D accelerometer calibration')
+        self.add_command('accelcalsimple', self.cmd_accelcal_simple, 'do simple accelerometer calibration')
         self.add_command('gyrocal', self.cmd_gyrocal, 'do gyro calibration')
         self.add_command('ahrstrim', self.cmd_ahrstrim, 'do AHRS trim')
         self.add_command('magcal', self.cmd_magcal, "magcal")
@@ -41,6 +42,13 @@ class CalibrationModule(mp_module.MPModule):
         self.accelcal_count = 0
         self.accelcal_wait_enter = False
 
+    def cmd_accelcal_simple(self, args):
+        '''do a simple accel calibration'''
+        mav = self.master
+        mav.mav.command_long_send(mav.target_system, mav.target_component,
+                                  mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION, 0,
+                                  0, 0, 0, 0, 4, 0, 0)
+        
     def cmd_gyrocal(self, args):
         '''do a full gyro calibration'''
         mav = self.master
@@ -77,6 +85,10 @@ class CalibrationModule(mp_module.MPModule):
             self.magcal_progess[m.compass_id] = result
             self.console.set_status('Progress', 'Calibration Progress: ' + " ".join(self.magcal_progess), row=4)
             print("Calibration of compass %u %s: fitness %.3f" % (m.compass_id, result, m.fitness))
+            mav = self.master
+            mav.mav.command_long_send(mav.target_system, mav.target_component,
+                                      mavutil.mavlink.MAV_CMD_DO_ACCEPT_MAG_CAL, 0,
+                                      1<<m.compass_id, 0, 0, 0, 0, 0, 0)
 
     def idle_task(self):
         '''handle mavlink packets'''
@@ -111,10 +123,13 @@ class CalibrationModule(mp_module.MPModule):
         '''calibrate pressure sensors'''
         self.master.calibrate_pressure()
 
+    def print_magcal_usage(self):
+        print("Usage: magcal <start|accept|cancel>")
+
     def cmd_magcal(self, args):
         '''control magnetometer calibration'''
         if len(args) < 1:
-            print("Usage: magcal <start|accept|cancel>")
+            self.print_magcal_usage()
             return
 
         if args[0] == 'start':
@@ -156,6 +171,9 @@ class CalibrationModule(mp_module.MPModule):
                 0, # param5
                 0, # param6
                 0) # param7
+        else:
+            self.print_magcal_usage()
+            return
 
 def init(mpstate):
     '''initialise module'''

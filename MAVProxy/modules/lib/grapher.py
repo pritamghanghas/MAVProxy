@@ -229,28 +229,29 @@ class MavGraph(object):
                              linestyle=linestyle, marker=marker, tz=None)
 
             empty = False
-            if self.show_flightmode:
-                alpha = 0.04
-                for i in range(len(self.modes)-1):
-                    mode_name = self.modes[i][1]
-                    c = self.flightmode_colour(mode_name)
-                    self.ax1.axvspan(self.modes[i][0], self.modes[i+1][0], fc=c, ec=edge_colour, alpha=alpha)
-                    self.modes_plotted[self.modes[i][1]] = (c, alpha)
-                mode_name = self.modes[-1][1]
+            
+        if self.show_flightmode:
+            alpha = 0.3
+            for i in range(len(self.modes)-1):
+                mode_name = self.modes[i][1]
                 c = self.flightmode_colour(mode_name)
-                self.ax1.axvspan(self.modes[-1][0], self.ax1.get_xlim()[1], fc=c, ec=edge_colour, alpha=alpha)
-                self.modes_plotted[self.modes[-1][1]] = (c, alpha)
+                self.ax1.axvspan(self.modes[i][0], self.modes[i+1][0], fc=c, ec=edge_colour, alpha=alpha)
+                self.modes_plotted[self.modes[i][1]] = (c, alpha)
+            mode_name = self.modes[-1][1]
+            c = self.flightmode_colour(mode_name)
+            self.ax1.axvspan(self.modes[-1][0], self.ax1.get_xlim()[1], fc=c, ec=edge_colour, alpha=alpha)
+            self.modes_plotted[self.modes[-1][1]] = (c, alpha)
 
-            if empty:
-                print("No data to graph")
-                return
+        if empty:
+            print("No data to graph")
+            return
 
         if self.show_flightmode:
             mode_patches = []
             for mode in self.modes_plotted.keys():
                 (color, alpha) = self.modes_plotted[mode]
                 mode_patches.append(matplotlib.patches.Patch(color=color,
-                                                             label=mode, alpha=alpha*5))
+                                                             label=mode, alpha=alpha*1.5))
             labels = [patch.get_label() for patch in mode_patches]
             if ax1_labels != []:
                 patches_legend = matplotlib.pyplot.legend(mode_patches, labels, loc=self.legend_flightmode)
@@ -293,9 +294,15 @@ class MavGraph(object):
             self.x[i].append(xv)
 
 
-    def process_mav(self, mlog, timeshift):
+    def process_mav(self, mlog, timeshift, flightmode_selections, _flightmodes):
         '''process one file'''
         self.vars = {}
+        idx = 0
+        all_false = True
+        for s in flightmode_selections:
+            if s:
+                all_false = False
+
         while True:
             msg = mlog.recv_msg()
             if msg is None:
@@ -305,10 +312,21 @@ class MavGraph(object):
             if self.condition:
                 if not mavutil.evaluate_condition(self.condition, mlog.messages):
                     continue
-            tdays = matplotlib.dates.date2num(datetime.datetime.fromtimestamp(msg._timestamp+timeshift))
-            self.add_data(tdays, msg, mlog.messages, mlog.flightmode)
+            try:
+                tdays = matplotlib.dates.date2num(datetime.datetime.fromtimestamp(msg._timestamp+timeshift))
+            except ValueError:
+                # this can happen if the log is corrupt
+                # ValueError: year is out of range
+                break
+            if all_false or len(flightmode_selections) == 0:
+                self.add_data(tdays, msg, mlog.messages, mlog.flightmode)
+            else:
+                if idx < len(_flightmodes) and msg._timestamp >= _flightmodes[idx][2]:
+                    idx += 1
+                elif (idx < len(flightmode_selections) and flightmode_selections[idx]):
+                    self.add_data(tdays, msg, mlog.messages, mlog.flightmode)
 
-    def process(self, block=True):
+    def process(self, flightmode_selections, _flightmodes, block=True):
         '''process and display graph'''
         self.msg_types = set()
         self.multiplier = []
@@ -330,20 +348,25 @@ class MavGraph(object):
             self.axes.append(1)
             self.first_only.append(False)
 
-        if self.labels is not None:
-            labels = self.labels.split(',')
-            if len(labels) != len(fields)*len(self.mav_list):
-                print("Number of labels (%u) must match number of fields (%u)" % (
-                    len(labels), len(fields)*len(self.mav_list)))
-                return
-        else:
-            labels = None
-
         timeshift = self.timeshift
 
         for fi in range(0, len(self.mav_list)):
             mlog = self.mav_list[fi]
-            self.process_mav(mlog, timeshift)
+            self.process_mav(mlog, timeshift, flightmode_selections, _flightmodes)
+        
+
+    def show(self, lenmavlist, block=True):
+        '''show graph'''
+        if self.labels is not None:
+            labels = self.labels.split(',')
+            if len(labels) != len(fields)*lenmavlist:
+                print("Number of labels (%u) must match number of fields (%u)" % (
+                    len(labels), len(fields)*lenmavlist))
+                return
+        else:
+            labels = None
+
+        for fi in range(0, lenmavlist):
             timeshift = 0
             for i in range(0, len(self.x)):
                 if self.first_only[i] and fi != 0:
@@ -361,10 +384,8 @@ class MavGraph(object):
             for i in range(0, len(self.x)):
                 self.x[i] = []
                 self.y[i] = []
-        pylab.draw()
 
-    def show(self, block=True):
-        '''show graph'''
+        pylab.draw()
         pylab.show(block=block)
 
 if __name__ == "__main__":
@@ -408,5 +429,5 @@ if __name__ == "__main__":
     mg.set_legend2(args.legend2)
     mg.set_multi(args.multi)
     mg.set_show_flightmode(args.show_flightmode)
-    mg.process()
-    mg.show()
+    mg.process([],0)
+    mg.show(len(mg.mav_list))

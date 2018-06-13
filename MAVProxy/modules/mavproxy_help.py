@@ -76,10 +76,12 @@ class HelpModule(mp_module.MPModule):
         if mp_util.has_wxpython:
             self.menu_added_console = False
             self.menu = MPMenuSubMenu('Help',
-                                  items=[MPMenuItem('MAVProxy website', 'MAVProxy website', '', handler=MPMenuOpenWeblink('http://dronecode.github.io/MAVProxy/')),
+                                  items=[MPMenuItem('MAVProxy website', 'MAVProxy website', '', handler=MPMenuOpenWeblink('http://ardupilot.github.io/MAVProxy/')),
                                          MPMenuItem('Check for Updates', 'Check for Updates', '', handler=MPMenuChildMessageDialog(title="Updates", message=self.newversion)),
-                                         MPMenuItem('About', 'About', '', handler=MPMenuChildMessageDialog(title="About MAVProxy", message="MAVProxy Version " + self.version + "\nOS: " + self.host + "\nPython " +  self.pythonversion + "\nWXPython " + self.wxVersion))])
+                                         MPMenuItem('About', 'About', '', handler=MPMenuChildMessageDialog(title="About MAVProxy", message=self.about_string()))])
 
+    def about_string(self):
+        return "MAVProxy Version " + self.version + "\nOS: " + self.host + "\nPython " +  self.pythonversion + "\nWXPython " + self.wxVersion
 
     #version number comparison for update checking
     def mycmp(self, version1, version2):
@@ -100,9 +102,9 @@ class HelpModule(mp_module.MPModule):
             return
 
         if args[0] == "about":
-            print("MAVProxy Version " + self.version + "\nOS: " + self.host + "\nPython " +  self.pythonversion)
+            print(self.about_string())
         elif args[0] == "site":
-            print("See http://dronecode.github.io/MAVProxy/ for documentation")
+            print("See http://ardupilot.github.io/MAVProxy/ for documentation")
         else:
             self.print_usage()
 

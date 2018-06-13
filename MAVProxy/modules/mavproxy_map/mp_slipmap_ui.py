@@ -1,14 +1,39 @@
-from MAVProxy.modules.lib.mp_menu import *
-from ..lib.wx_loader import wx
-import mp_elevation
-import os
 import functools
-from mp_slipmap_util import *
+import math
+import mp_elevation
+import numpy as np
+import os
+import time
 
-try:
-    import cv2.cv as cv
-except ImportError:
-    import cv
+from ..lib.wx_loader import wx
+
+from mp_slipmap_util import SlipBrightness
+from mp_slipmap_util import SlipCenter
+from mp_slipmap_util import SlipClearLayer
+from mp_slipmap_util import SlipDefaultPopup
+from mp_slipmap_util import SlipFlightModeLegend
+from mp_slipmap_util import SlipGrid
+from mp_slipmap_util import SlipHideObject
+from mp_slipmap_util import SlipIcon
+from mp_slipmap_util import SlipInformation
+from mp_slipmap_util import SlipKeyEvent
+from mp_slipmap_util import SlipMenuEvent
+from mp_slipmap_util import SlipMouseEvent
+from mp_slipmap_util import SlipObject
+from mp_slipmap_util import SlipObjectSelection
+from mp_slipmap_util import SlipPosition
+from mp_slipmap_util import SlipRemoveObject
+from mp_slipmap_util import SlipThumbnail
+
+from MAVProxy.modules.lib import mp_util
+
+from MAVProxy.modules.lib.mp_menu import MPMenuCheckbox
+from MAVProxy.modules.lib.mp_menu import MPMenuItem
+from MAVProxy.modules.lib.mp_menu import MPMenuRadio
+from MAVProxy.modules.lib.mp_menu import MPMenuSeparator
+from MAVProxy.modules.lib.mp_menu import MPMenuSubMenu
+from MAVProxy.modules.lib.mp_menu import MPMenuTop
+
 
 class MPSlipMapFrame(wx.Frame):
     """ The main frame of the viewer
@@ -27,22 +52,36 @@ class MPSlipMapFrame(wx.Frame):
         state.panel = MPSlipMapPanel(self, state)
         self.Bind(wx.EVT_IDLE, self.on_idle)
         self.Bind(wx.EVT_SIZE, state.panel.on_size)
+        self.legend_checkbox_menuitem_added = False
 
         # create the View menu
-        self.menu = MPMenuTop([MPMenuSubMenu('View',
-                                             items=[MPMenuCheckbox('Follow\tCtrl+F', 'Follow Aircraft', 'toggleFollow',
-                                                                   checked=state.follow),
-                                                    MPMenuCheckbox('Grid\tCtrl+G', 'Enable Grid', 'toggleGrid',
-                                                                   checked=state.grid),
-                                                    MPMenuItem('Goto\tCtrl+P', 'Goto Position', 'gotoPosition'),
-                                                    MPMenuItem('Brightness +\tCtrl+B', 'Increase Brightness', 'increaseBrightness'),
-                                                    MPMenuItem('Brightness -\tCtrl+Shift+B', 'Decrease Brightness', 'decreaseBrightness'),
-                                                    MPMenuCheckbox('Download Tiles\tCtrl+D', 'Enable Tile Download', 'toggleDownload',
-                                                                   checked=state.download),
-                                                    MPMenuRadio('Service', 'Select map service',
-                                                                returnkey='setService',
-                                                                selected=state.mt.get_service(),
-                                                                items=state.mt.get_service_list())])])
+        self.menu = MPMenuTop([
+            MPMenuSubMenu('View', items=[
+                MPMenuCheckbox('Follow\tCtrl+F',
+                               'Follow Aircraft',
+                               'toggleFollow',
+                               checked=state.follow),
+                MPMenuCheckbox('Grid\tCtrl+G',
+                               'Enable Grid',
+                               'toggleGrid',
+                               checked=state.grid),
+                MPMenuItem('Goto\tCtrl+P',
+                           'Goto Position',
+                           'gotoPosition'),
+                MPMenuItem('Brightness +\tCtrl+B',
+                           'Increase Brightness',
+                           'increaseBrightness'),
+                MPMenuItem('Brightness -\tCtrl+Shift+B',
+                           'Decrease Brightness',
+                           'decreaseBrightness'),
+                MPMenuCheckbox('Download Tiles\tCtrl+D',
+                               'Enable Tile Download',
+                               'toggleDownload',
+                               checked=state.download),
+                MPMenuRadio('Service', 'Select map service',
+                            returnkey='setService',
+                            selected=state.mt.get_service(),
+                            items=state.mt.get_service_list())])])
         self.SetMenuBar(self.menu.wx_menu())
         self.Bind(wx.EVT_MENU, self.on_menu)
 
@@ -73,6 +112,8 @@ class MPSlipMapFrame(wx.Frame):
         ret.call_handler()
         if ret.returnkey == 'toggleGrid':
             state.grid = ret.IsChecked()
+        elif ret.returnkey == 'toggleLegend':
+            state.legend = ret.IsChecked()
         elif ret.returnkey == 'toggleFollow':
             state.follow = ret.IsChecked()
         elif ret.returnkey == 'toggleDownload':
@@ -82,9 +123,13 @@ class MPSlipMapFrame(wx.Frame):
         elif ret.returnkey == 'gotoPosition':
             state.panel.enter_position()
         elif ret.returnkey == 'increaseBrightness':
-            state.brightness *= 1.25
+            state.brightness += 20
+            if state.brightness > 255:
+                state.brightness = 255
         elif ret.returnkey == 'decreaseBrightness':
-            state.brightness /= 1.25
+            state.brightness -= 20
+            if state.brightness < -255:
+                state.brightness = -255
         state.need_redraw = True
 
     def find_object(self, key, layers):
@@ -117,14 +162,26 @@ class MPSlipMapFrame(wx.Frame):
         (lat, lon) = object.latlon
         state.panel.re_center(state.width/2, state.height/2, lat, lon)
 
+    def add_legend_checkbox_menuitem(self):
+        self.menu.add_to_submenu(['View'], [MPMenuCheckbox('Legend\tCtrl+L',
+                                                         'Enable Legend',
+                                                         'toggleLegend',
+                                                         checked=self.state.legend)
+        ])
+
     def add_object(self, obj):
-        '''add an object to a later'''
+        '''add an object to a layer'''
         state = self.state
         if not obj.layer in state.layers:
             # its a new layer
             state.layers[obj.layer] = {}
         state.layers[obj.layer][obj.key] = obj
         state.need_redraw = True
+        if (not self.legend_checkbox_menuitem_added and
+            isinstance(obj, SlipFlightModeLegend)):
+            self.add_legend_checkbox_menuitem()
+            self.legend_checkbox_menuitem_added = True
+            self.SetMenuBar(self.menu.wx_menu())
 
     def remove_object(self, key):
         '''remove an object by key from all layers'''
@@ -256,7 +313,7 @@ class MPSlipMapPanel(wx.Panel):
         self.mainSizer.AddSpacer(2)
 
         # panel for the main map image
-        self.imagePanel = mp_widgets.ImagePanel(self, wx.EmptyImage(state.width,state.height))
+        self.imagePanel = mp_widgets.ImagePanel(self, np.zeros((state.height, state.width, 3), dtype=np.uint8))
         self.mainSizer.Add(self.imagePanel, flag=wx.GROW, border=5)
         self.imagePanel.Bind(wx.EVT_MOUSE_EVENTS, self.on_mouse)
         self.imagePanel.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
@@ -333,7 +390,7 @@ class MPSlipMapPanel(wx.Panel):
             if state.elevation:
                 alt = self.ElevationMap.GetElevation(lat, lon)
                 if alt is not None:
-                    newtext += ' %.1fm' % alt
+                    newtext += ' %.1fm %uft' % (alt, alt*3.28084)
         state.mt.set_download(state.download)
         pending = 0
         if state.download:
@@ -353,7 +410,7 @@ class MPSlipMapPanel(wx.Panel):
                                             self.click_pos[0], self.click_pos[1])
             bearing = mp_util.gps_bearing(self.last_click_pos[0], self.last_click_pos[1],
                                             self.click_pos[0], self.click_pos[1])
-            newtext += '  Distance: %.1fm Bearing %.1f' % (distance, bearing)
+            newtext += '  Distance: %.1fm %.1fnm Bearing %.1f' % (distance, distance*0.000539957, bearing)
         if newtext != state.oldtext:
             self.position.Clear()
             self.position.WriteText(newtext)
@@ -376,6 +433,8 @@ class MPSlipMapPanel(wx.Panel):
         keys.sort()
         for k in keys:
             obj = objects[k]
+            if not self.state.legend and isinstance(obj, SlipFlightModeLegend):
+                continue
             bounds2 = obj.bounds()
             if bounds2 is None or mp_util.bounds_overlap(bounds, bounds2):
                 obj.draw(img, self.pixmapper, bounds)
@@ -384,7 +443,7 @@ class MPSlipMapPanel(wx.Panel):
         '''redraw the map with current settings'''
         state = self.state
 
-        view_same = (self.last_view and self.map_img and self.last_view == self.current_view())
+        view_same = (self.last_view is not None and self.map_img is not None and self.last_view == self.current_view())
 
         if view_same and not state.need_redraw:
             return
@@ -392,16 +451,19 @@ class MPSlipMapPanel(wx.Panel):
         # get the new map
         self.map_img = state.mt.area_to_image(state.lat, state.lon,
                                               state.width, state.height, state.ground_width)
-        if state.brightness != 1.0:
-            cv.ConvertScale(self.map_img, self.map_img, scale=state.brightness)
-
-
+        if state.brightness != 0: # valid state.brightness range is [-255, 255]
+            brightness = np.uint8(np.abs(state.brightness))
+            if state.brightness > 0:
+                self.map_img = np.where((255 - self.map_img) < brightness, 255, self.map_img + brightness)
+            else:
+                self.map_img = np.where((255 + self.map_img) < brightness, 0, self.map_img - brightness)
+            
         # find display bounding box
         (lat2,lon2) = self.coordinates(state.width-1, state.height-1)
         bounds = (lat2, state.lon, state.lat-lat2, lon2-state.lon)
 
         # get the image
-        img = cv.CloneImage(self.map_img)
+        img = self.map_img.copy()
 
         # possibly draw a grid
         if state.grid:
@@ -418,9 +480,7 @@ class MPSlipMapPanel(wx.Panel):
             state.info[key].draw(state.panel, state.panel.information)
 
         # display the image
-        self.img = wx.EmptyImage(state.width,state.height)
-        self.img.SetData(img.tostring())
-        self.imagePanel.set_image(self.img)
+        self.imagePanel.set_image(img)
 
         self.update_position()
 
@@ -433,7 +493,6 @@ class MPSlipMapPanel(wx.Panel):
     def on_redraw_timer(self, event):
         '''the redraw timer ensures we show new map tiles as they
         are downloaded'''
-        state = self.state
         self.redraw_map()
 
     def on_size(self, event):
@@ -446,7 +505,6 @@ class MPSlipMapPanel(wx.Panel):
 
     def on_mouse_wheel(self, event):
         '''handle mouse wheel zoom changes'''
-        state = self.state
         rotation = event.GetWheelRotation() / event.GetWheelDelta()
         if rotation > 0:
             zoom = 1.0/(1.1 * rotation)
@@ -475,7 +533,7 @@ class MPSlipMapPanel(wx.Panel):
         if selected.popup_menu is not None:
             import copy
             popup_menu = selected.popup_menu
-            if state.default_popup.popup is not None and state.default_popup.combine:
+            if state.default_popup is not None and state.default_popup.combine:
                 popup_menu = copy.deepcopy(popup_menu)
                 popup_menu.add(MPMenuSeparator())
                 popup_menu.combine(state.default_popup.popup)
@@ -565,13 +623,12 @@ class MPSlipMapPanel(wx.Panel):
         c = event.GetUniChar()
         if c == ord('+') or (c == ord('=') and event.ShiftDown()):
             self.change_zoom(1.0/1.2)
-            event.Skip()
         elif c == ord('-'):
             self.change_zoom(1.2)
-            event.Skip()
-        elif c == ord('G'):
+        elif c == ord('G') and not event.ControlDown():
             self.enter_position()
-            event.Skip()
         elif c == ord('C'):
             self.clear_thumbnails()
+        else:
+            # propogate event:
             event.Skip()

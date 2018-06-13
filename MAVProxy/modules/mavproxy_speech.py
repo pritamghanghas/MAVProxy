@@ -7,17 +7,24 @@ from MAVProxy.modules.lib import mp_module
 class SpeechModule(mp_module.MPModule):
     def __init__(self, mpstate):
         super(SpeechModule, self).__init__(mpstate, "speech", "speech output")
+        self.add_command('speech', self.cmd_speech, "text-to-speech", ['<test>'])
+
         self.old_mpstate_say_function = self.mpstate.functions.say
         self.mpstate.functions.say = self.say
         try:
             self.settings.set('speech', 1)
         except AttributeError:
             self.settings.append(('speech', int, 1))
+        try:
+            self.settings.set('speech_voice', '')
+        except AttributeError:
+            self.settings.append(('speech_voice', str, ''))
         self.kill_speech_dispatcher()
-        for backend in [self.say_speechd, self.say_espeak, self.say_speech]:
+        for (backend_name,backend) in [("speechd",self.say_speechd), ("espeak",self.say_espeak), ("speech", self.say_speech), ("say", self.say_say)]:
             try:
                 backend("")
                 self.say_backend = backend
+                print("Using speech backend '%s'" % backend_name)
                 return
             except Exception:
                 pass
@@ -64,12 +71,19 @@ class SpeechModule(mp_module.MPModule):
     def say_espeak(self, text, priority='important'):
         '''speak some text using espeak'''
         from espeak import espeak
+        if self.settings.speech_voice:
+            espeak.set_voice(self.settings.speech_voice)
         espeak.synth(text)
 
     def say_speech(self, text, priority='important'):
         '''speak some text using speech module'''
         import speech
         speech.say(text)
+
+    def say_say(self, text, priority='important'):
+        '''speak some text using macOS say command'''
+        import subprocess
+        subprocess.check_call(["say",text])
 
     def say(self, text, priority='important'):
         '''speak some text'''
@@ -85,6 +99,20 @@ class SpeechModule(mp_module.MPModule):
             # say some statustext values
             if msg.text.startswith("Tuning: "):
                 self.say(msg.text[8:])
+
+    def cmd_speech(self, args):
+        '''speech commands'''
+        usage = "usage: speech <say>"
+        if len(args) < 1:
+            print(usage)
+            return
+
+        if args[0] == "say":
+            if len(args) < 2:
+                print("usage: speech say <text to say>")
+                return
+            self.say(" ".join(args[1::]))
+
 
 def init(mpstate):
     '''initialise module'''

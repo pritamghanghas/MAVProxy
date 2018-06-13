@@ -5,16 +5,14 @@ view a mission log on a map
 '''
 
 import sys, time, os
+from math import *
 
 from pymavlink import mavutil, mavwp, mavextra
 from MAVProxy.modules.mavproxy_map import mp_slipmap, mp_tile
 from MAVProxy.modules.lib import mp_util
 import functools
 
-try:
-    import cv2.cv as cv
-except ImportError:
-    import cv
+import cv2
 
 def create_map(title):
     '''create map object'''
@@ -24,7 +22,7 @@ def pixel_coords(latlon, ground_width=0, mt=None, topleft=None, width=None):
     (lat,lon) = (latlon[0], latlon[1])
     return mt.coord_to_pixel(topleft[0], topleft[1], width, ground_width, lat, lon)
 
-def create_imagefile(options, filename, latlon, ground_width, path_objs, mission_obj, fence_obj, width=600, height=600):
+def create_imagefile(options, filename, latlon, ground_width, path_objs, mission_obj, fence_obj, width=600, height=600, used_flightmodes=[], mav_type=None):
     '''create path and mission as an image file'''
     mt = mp_tile.MPTile(service=options.service)
 
@@ -44,27 +42,89 @@ def create_imagefile(options, filename, latlon, ground_width, path_objs, mission
             m.draw(map_img, pixmapper, None)
     if fence_obj is not None:
         fence_obj.draw(map_img, pixmapper, None)
-    cv.CvtColor(map_img, map_img, cv.CV_BGR2RGB)
-    cv.SaveImage(filename, map_img)
+    if (options is not None and
+        mav_type is not None and
+        options.colour_source == "flightmode"):
+        tuples = [ (mode, colour_for_flightmode(mav_type, mode))
+                   for mode in used_flightmodes.keys() ]
+        legend = mp_slipmap.SlipFlightModeLegend("legend", tuples)
+        legend.draw(map_img, pixmapper, None)
 
-colourmap = {
-    'MANUAL'    : (255,   0,   0),
-    'AUTO'      : (  0, 255,   0),
-    'LOITER'    : (  0,   0, 255),
-    'FBWA'      : (255, 100,   0),
-    'RTL'       : (255,   0, 100),
-    'STABILIZE' : (100, 255,   0),
-    'LAND'      : (  0, 255, 100),
-    'STEERING'  : (100,   0, 255),
-    'HOLD'      : (  0, 100, 255),
-    'ALT_HOLD'  : (255, 100, 100),
-    'CIRCLE'    : (100, 255, 100),
-    'GUIDED'    : (100, 100, 255),
-    'ACRO'      : (255, 255,   0),
-    'CRUISE'    : (0,   255, 255),
-    'UNKNOWN'   : (230, 70,  40)
-    }
+    map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB)
+    cv2.imwrite(filename, map_img)
 
+map_colours = [ (255,   0,   0),
+                (  0, 255,   0),
+                (  0,   0, 255),
+                (127,   0,   0),
+                (  0, 127,   0),
+#                (  0,   0, 127),
+                (255, 255,   0),
+                (255,   0, 255),
+                (  0, 255, 255),
+                (127, 127,   0),
+                (127,   0, 127),
+                (  0, 127, 127),
+
+                (255,  191,   0),
+                (255,   0,  191),
+                (255,  191,  191),
+
+                (191, 255,   0),
+                (191,   0, 255),
+                (191, 255, 255),
+
+                ( 0, 255,  191),
+                ( 0,  191, 255),
+                ( 0, 255, 255),
+]
+colour_map_copter = {}
+colour_map_plane = {}
+colour_map_rover = {}
+colour_map_tracker = {}
+colour_map_submarine = {}
+
+for mytuple in ((mavutil.mode_mapping_apm.values(),colour_map_plane),
+                (mavutil.mode_mapping_acm.values(),colour_map_copter),
+                (mavutil.mode_mapping_rover.values(),colour_map_rover),
+                (mavutil.mode_mapping_tracker.values(),colour_map_tracker),
+                (mavutil.mode_mapping_sub.values(),colour_map_submarine),
+):
+    (mode_names, colour_map) = mytuple
+    i=0
+    for mode_name in mode_names:
+        colour_map[mode_name] = map_colours[i]
+        i += 1
+        if i >= len(map_colours):
+            print("Warning: reusing colours!")
+            i = 0
+    colour_map["UNKNOWN"] = (0, 0, 0)
+
+colourmap_check_done = False
+def colourmap_for_mav_type(mav_type):
+    # swiped from "def mode_mapping_byname(mav_type):" in mavutil
+    map = None
+    if mav_type in [mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                    mavutil.mavlink.MAV_TYPE_HELICOPTER,
+                    mavutil.mavlink.MAV_TYPE_HEXAROTOR,
+                    mavutil.mavlink.MAV_TYPE_OCTOROTOR,
+                    mavutil.mavlink.MAV_TYPE_COAXIAL,
+                    mavutil.mavlink.MAV_TYPE_TRICOPTER]:
+        map = colour_map_copter
+    if mav_type == mavutil.mavlink.MAV_TYPE_FIXED_WING:
+        map = colour_map_plane
+    if mav_type == mavutil.mavlink.MAV_TYPE_GROUND_ROVER:
+        map = colour_map_rover
+    if mav_type == mavutil.mavlink.MAV_TYPE_ANTENNA_TRACKER:
+        map = colour_map_tracker
+    if mav_type == mavutil.mavlink.MAV_TYPE_SUBMARINE:
+        map = colour_map_submarine
+    if map is None:
+        print("No colormap for mav_type=%u" % (map,))
+        # we probably don't have a valid mode map, so returning
+        # anything but the empty map here is probably pointless:
+        map = colour_map_plane
+    return map
 
 def display_waypoints(wploader, map):
     '''display the waypoints'''
@@ -140,10 +200,14 @@ def colour_for_point(mlog, point, instance, options):
     return (b,b,b)
 
 def colour_for_point_flightmode(mlog, point, instance, options):
-    fmode = getattr(mlog, 'flightmode','')
+    return colour_for_flightmode(getattr(mlog, 'mav_type',None), getattr(mlog, 'flightmode',''), instance)
+
+def colour_for_flightmode(mav_type, fmode, instance=0):
+    colourmap = colourmap_for_mav_type(mav_type)
     if fmode in colourmap:
         colour = colourmap[fmode]
     else:
+        print("No entry in colourmap for %s" % (str(fmode)))
         colour = colourmap['UNKNOWN']
     (r,g,b) = colour
     (r,g,b) = (r+instance*80,g+instance*50,b+instance*70)
@@ -158,16 +222,19 @@ def colour_for_point_flightmode(mlog, point, instance, options):
     colour = (r,g,b)
     return colour
 
-def mavflightview_mav(mlog, options=None, title=None):
+def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
     '''create a map for a log file'''
-    if not title:
-        title='MAVFlightView'
     wp = mavwp.MAVWPLoader()
     if options.mission is not None:
         wp.load(options.mission)
     fen = mavwp.MAVFenceLoader()
     if options.fence is not None:
         fen.load(options.fence)
+    all_false = True
+    for s in flightmode_selections:
+        if s:
+            all_false = False
+    idx = 0
     path = [[]]
     instances = {}
     ekf_counter = 0
@@ -190,6 +257,7 @@ def mavflightview_mav(mlog, options=None, title=None):
     print("Looking for types %s" % str(types))
 
     last_timestamps = {}
+    used_flightmodes = {}
 
     while True:
         try:
@@ -231,68 +299,82 @@ def mavflightview_mav(mlog, options=None, title=None):
             continue
         if options.mode is not None and mlog.flightmode.lower() != options.mode.lower():
             continue
-        if type in ['GPS','GPS2']:
-            status = getattr(m, 'Status', None)
-            if status is None:
-                status = getattr(m, 'FixType', None)
+
+        if not all_false and len(flightmode_selections) > 0 and idx < len(options._flightmodes) and m._timestamp >= options._flightmodes[idx][2]:
+            idx += 1
+        elif (idx < len(flightmode_selections) and flightmode_selections[idx]) or all_false or len(flightmode_selections) == 0:
+            used_flightmodes[mlog.flightmode] = 1
+            if type in ['GPS','GPS2']:
+                status = getattr(m, 'Status', None)
                 if status is None:
-                    print("Can't find status on GPS message")
-                    print(m)
-                    break
-            if status < 2:
-                continue
-            # flash log
-            lat = m.Lat
-            lng = getattr(m, 'Lng', None)
-            if lng is None:
-                lng = getattr(m, 'Lon', None)
+                    status = getattr(m, 'FixType', None)
+                    if status is None:
+                        print("Can't find status on GPS message")
+                        print(m)
+                        break
+                if status < 2:
+                    continue
+                # flash log
+                lat = m.Lat
+                lng = getattr(m, 'Lng', None)
                 if lng is None:
-                    print("Can't find longitude on GPS message")
-                    print(m)
-                    break
-        elif type in ['EKF1', 'ANU1']:
-            pos = mavextra.ekf1_pos(m)
-            if pos is None:
-                continue
-            ekf_counter += 1
-            if ekf_counter % options.ekf_sample != 0:
-                continue
-            (lat, lng) = pos
-        elif type in ['NKF1']:
-            pos = mavextra.ekf1_pos(m)
-            if pos is None:
-                continue
-            nkf_counter += 1
-            if nkf_counter % options.nkf_sample != 0:
-                continue
-            (lat, lng) = pos
-        elif type in ['ANU5']:
-            (lat, lng) = (m.Alat*1.0e-7, m.Alng*1.0e-7)
-        elif type in ['AHR2', 'POS', 'CHEK']:
-            (lat, lng) = (m.Lat, m.Lng)
-        elif type == 'AHRS2':
-            (lat, lng) = (m.lat*1.0e-7, m.lng*1.0e-7)
-        else:
-            lat = m.lat * 1.0e-7
-            lng = m.lon * 1.0e-7
+                    lng = getattr(m, 'Lon', None)
+                    if lng is None:
+                        print("Can't find longitude on GPS message")
+                        print(m)
+                        break
+            elif type in ['EKF1', 'ANU1']:
+                pos = mavextra.ekf1_pos(m)
+                if pos is None:
+                    continue
+                ekf_counter += 1
+                if ekf_counter % options.ekf_sample != 0:
+                    continue
+                (lat, lng) = pos
+            elif type in ['NKF1']:
+                pos = mavextra.ekf1_pos(m)
+                if pos is None:
+                    continue
+                nkf_counter += 1
+                if nkf_counter % options.nkf_sample != 0:
+                    continue
+                (lat, lng) = pos
+            elif type in ['ANU5']:
+                (lat, lng) = (m.Alat*1.0e-7, m.Alng*1.0e-7)
+            elif type in ['AHR2', 'POS', 'CHEK']:
+                (lat, lng) = (m.Lat, m.Lng)
+            elif type == 'AHRS2':
+                (lat, lng) = (m.lat*1.0e-7, m.lng*1.0e-7)
+            elif type == 'ORGN':
+                (lat, lng) = (m.Lat, m.Lng)
+            else:
+                lat = m.lat * 1.0e-7
+                lng = m.lon * 1.0e-7
 
-        # automatically add new types to instances
-        if type not in instances:
-            instances[type] = len(instances)
-            while len(instances) >= len(path):
-                path.append([])
-        instance = instances[type]
+            # automatically add new types to instances
+            if type not in instances:
+                instances[type] = len(instances)
+                while len(instances) >= len(path):
+                    path.append([])
+            instance = instances[type]
 
-        if abs(lat)>0.01 or abs(lng)>0.01:
-            colour = colour_for_point(mlog, (lat, lng), instance, options)
-            point = (lat, lng, colour)
+            if abs(lat)>0.01 or abs(lng)>0.01:
+                colour = colour_for_point(mlog, (lat, lng), instance, options)
+                point = (lat, lng, colour)
 
-            if options.rate == 0 or not type in last_timestamps or m._timestamp - last_timestamps[type] > 1.0/options.rate:
-                last_timestamps[type] = m._timestamp
-                path[instance].append(point)
+                if options.rate == 0 or not type in last_timestamps or m._timestamp - last_timestamps[type] > 1.0/options.rate:
+                    last_timestamps[type] = m._timestamp
+                    path[instance].append(point)
     if len(path[0]) == 0:
         print("No points to plot")
-        return
+        return None
+
+    return [path, wp, fen, used_flightmodes, getattr(mlog, 'mav_type',None)]
+
+def mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, title=None):
+    if not title:
+        title='MAVFlightView'
+
     bounds = mp_util.polygon_bounds(path[0])
     (lat, lon) = (bounds[0]+bounds[2], bounds[1])
     (lat, lon) = mp_util.gps_newpos(lat, lon, -45, 50)
@@ -324,7 +406,7 @@ def mavflightview_mav(mlog, options=None, title=None):
         fence_obj = None
 
     if options.imagefile:
-        create_imagefile(options, options.imagefile, (lat,lon), ground_width, path_objs, mission_obj, fence_obj)
+        create_imagefile(options, options.imagefile, (lat,lon), ground_width, path_objs, mission_obj, fence_obj, used_flightmodes=used_flightmodes, mav_type=mav_type)
     else:
         global multi_map
         if options.multi and multi_map is not None:
@@ -337,7 +419,8 @@ def mavflightview_mav(mlog, options=None, title=None):
                                        height=600,
                                        ground_width=ground_width,
                                        lat=lat, lon=lon,
-                                       debug=options.debug)
+                                       debug=options.debug,
+                                       show_flightmode_legend=options.show_flightmode_legend)
         if options.multi:
             multi_map = map
         for path_obj in path_objs:
@@ -357,14 +440,21 @@ def mavflightview_mav(mlog, options=None, title=None):
             icon = map.icon(icon)
             map.add_object(mp_slipmap.SlipIcon('icon - %s' % str(flag), (float(lat),float(lon)), icon, layer=3, rotation=0, follow=False))
 
-    source = getattr(options, "colour_source", "flightmode")
-    if source != "flightmode":
-        print("colour-source: min=%f max=%f" % (colour_source_min, colour_source_max))
+        if options.colour_source == "flightmode":
+            tuples = [ (mode, colour_for_flightmode(mav_type, mode))
+                       for mode in used_flightmodes.keys() ]
+            map.add_object(mp_slipmap.SlipFlightModeLegend("legend", tuples))
+        else:
+            print("colour-source: min=%f max=%f" % (colour_source_min, colour_source_max))
 
 def mavflightview(filename, options):
     print("Loading %s ..." % filename)
     mlog = mavutil.mavlink_connection(filename)
-    mavflightview_mav(mlog, options, title=filename)
+    stuff = mavflightview_mav(mlog, options)
+    if stuff is None:
+        return
+    [path, wp, fen, used_flightmodes, mav_type] = stuff
+    mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, title=filename)
 
 class mavflightview_options(object):
     def __init__(self):
@@ -386,6 +476,8 @@ class mavflightview_options(object):
         self.types = None
         self.ekf_sample = 1
         self.rate = 0
+        self._flightmodes = []
+        self.colour_source = 'flightmode'
 
 if __name__ == "__main__":
     from optparse import OptionParser
@@ -410,6 +502,7 @@ if __name__ == "__main__":
     parser.add_option("--nkf-sample", type='int', default=1, help="sub-sampling of NKF messages")
     parser.add_option("--rate", type='int', default=0, help="maximum message rate to display (0 means all points)")
     parser.add_option("--colour-source", type="str", default="flightmode", help="expression with range 0f..255f used for point colour")
+    parser.add_option("--no-flightmode-legend", action="store_false", default=True, dest="show_flightmode_legend", help="hide legend for colour used for flight modes")
 
     (opts, args) = parser.parse_args()
 

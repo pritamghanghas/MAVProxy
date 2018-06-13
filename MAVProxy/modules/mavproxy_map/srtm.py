@@ -19,8 +19,9 @@ import multiprocessing
 from MAVProxy.modules.lib import mp_util
 import tempfile
 
-childTileDownload = None
-childFileListDownload = None
+childTileDownload = {}
+childFileListDownload = {}
+filelistDownloadActive = 0
 
 class NoSuchTileError(Exception):
     """Raised when there is no tile for a region."""
@@ -72,12 +73,15 @@ class SRTMDownloader():
 
         self.debug = debug
         self.offline = offline
+        self.offlinemessageshown = 0
+        if self.offline == 1 and self.debug:
+            print "Map Module in Offline mode"
         self.first_failure = False
         self.server = server
         self.directory = directory
         self.cachedir = cachedir
-	'''print "SRTMDownloader - server= %s, directory=%s." % \
-              (self.server, self.directory)'''
+        if self.debug:
+            print("SRTMDownloader - server=%s, directory=%s." % (self.server, self.directory))
         if not os.path.exists(cachedir):
             mp_util.mkdir_p(cachedir)
         self.filelist = {}
@@ -92,7 +96,7 @@ class SRTMDownloader():
         try:
             data = open(self.filelist_file, 'rb')
         except IOError:
-            '''print "No SRTM cached file list. Creating new one!"'''
+            '''print("No SRTM cached file list. Creating new one!")'''
             if self.offline == 0:
                 self.createFileList()
             return
@@ -104,7 +108,7 @@ class SRTMDownloader():
                 if self.offline == 0:
                     self.createFileList()
         except:
-            '''print "Unknown error loading cached SRTM file list. Creating new one!"'''
+            '''print("Unknown error loading cached SRTM file list. Creating new one!")'''
             if self.offline == 0:
                 self.createFileList()
 
@@ -112,9 +116,33 @@ class SRTMDownloader():
         """SRTM data is split into different directories, get a list of all of
             them and create a dictionary for easy lookup."""
         global childFileListDownload
-        if childFileListDownload is None or not childFileListDownload.is_alive():
-            childFileListDownload = multiprocessing.Process(target=self.createFileListHTTP)
-            childFileListDownload.start()
+        global filelistDownloadActive
+        mypid = os.getpid()
+        if mypid not in childFileListDownload or not childFileListDownload[mypid].is_alive():
+            childFileListDownload[mypid] = multiprocessing.Process(target=self.createFileListHTTP)
+            filelistDownloadActive = 1
+            childFileListDownload[mypid].start()
+            filelistDownloadActive = 0
+
+    def getURIWithRedirect(self, url):
+        '''fetch a URL with redirect handling'''
+        tries = 0
+        while tries < 5:
+                conn = httplib.HTTPConnection(self.server)
+                conn.request("GET", url)
+                r1 = conn.getresponse()
+                if r1.status in [301, 302, 303, 307]:
+                    location = r1.getheader('Location')
+                    if self.debug:
+                        print("redirect from %s to %s" % (url, location))
+                    url = location
+                    conn.close()
+                    tries += 1
+                    continue
+                data = r1.read()
+                conn.close()
+                return data
+        return None
 
     def createFileListHTTP(self):
         """Create a list of the available SRTM files on the server using
@@ -123,47 +151,30 @@ class SRTMDownloader():
         """
         mp_util.child_close_fds()
         if self.debug:
-            print("Connecting to %s" % self.server)
+            print("Connecting to %s" % self.server, self.directory)
         try:
-            conn = httplib.HTTPConnection(self.server)
-            conn.request("GET",self.directory)
+            data = self.getURIWithRedirect(self.directory)
         except Exception:
             return
-        r1 = conn.getresponse()
-        '''if r1.status==200:
-            print "status200 received ok"
-        else:
-            print "oh no = status=%d %s" \
-                  % (r1.status,r1.reason)'''
-
-        data = r1.read()
         parser = parseHTMLDirectoryListing()
         parser.feed(data)
         continents = parser.getDirListing()
-        '''print continents'''
-        conn.close()
+        if self.debug:
+            print('continents: ', continents)
 
         for continent in continents:
             if not continent[0].isalpha() or continent.startswith('README'):
                 continue
-            '''print "Downloading file list for", continent'''
+            if self.debug:
+                print("Downloading file list for: ", continent)
             url = "%s%s" % (self.directory,continent)
             if self.debug:
                 print("fetching %s" % url)
             try:
-                conn = httplib.HTTPConnection(self.server)
-                conn.request("GET", url)
-                r1 = conn.getresponse()
+                data = self.getURIWithRedirect(url)
             except Exception as ex:
                 print("Failed to download %s : %s" % (url, ex))
                 continue
-            '''if r1.status==200:
-                print "status200 received ok"
-            else:
-                print "oh no = status=%d %s" \
-                      % (r1.status,r1.reason)'''
-            data = r1.read()
-            conn.close()
             parser = parseHTMLDirectoryListing()
             parser.feed(data)
             files = parser.getDirListing()
@@ -172,7 +183,7 @@ class SRTMDownloader():
                 self.filelist[self.parseFilename(filename)] = (
                             continent, filename)
 
-            '''print self.filelist'''
+            '''print(self.filelist)'''
         # Add meta info
         self.filelist["server"] = self.server
         self.filelist["directory"] = self.directory
@@ -184,7 +195,10 @@ class SRTMDownloader():
                 os.unlink(self.filelist_file)
             except Exception:
                 pass
-            os.rename(tmpname, self.filelist_file)
+            try:
+                os.rename(tmpname, self.filelist_file)
+            except Exception:
+                pass
         if self.debug:
             print("created file list with %u entries" % len(self.filelist))
 
@@ -193,7 +207,7 @@ class SRTMDownloader():
         match = self.filename_regex.match(filename)
         if match is None:
             # TODO?: Raise exception?
-            '''print "Filename", filename, "unrecognized!"'''
+            '''print("Filename", filename, "unrecognized!")'''
             return None
         lat = int(match.group(2))
         lon = int(match.group(4))
@@ -208,11 +222,18 @@ class SRTMDownloader():
             SRTM3 object depending on what is available, however currently it
             only returns SRTM3 objects."""
         global childFileListDownload
-        if childFileListDownload is not None and childFileListDownload.is_alive():
-            '''print "Getting file list"'''
+        global filelistDownloadActive
+        mypid = os.getpid()
+        if mypid in childFileListDownload and childFileListDownload[mypid].is_alive():
+            if self.debug:
+                print("still getting file list")
+            return 0
+        elif not os.path.isfile(self.filelist_file) and filelistDownloadActive == 0:
+            self.createFileList()
             return 0
         elif not self.filelist:
-            '''print "Filelist download complete, loading data"'''
+            if self.debug:
+                print("Filelist download complete, loading data ", self.filelist_file)
             data = open(self.filelist_file, 'rb')
             self.filelist = pickle.load(data)
             data.close()
@@ -220,25 +241,26 @@ class SRTMDownloader():
         try:
             continent, filename = self.filelist[(int(lat), int(lon))]
         except KeyError:
-            '''print "here??"'''
             if len(self.filelist) > self.min_filelist_len:
                 # we appear to have a full filelist - this must be ocean
                 return SRTMOceanTile(int(lat), int(lon))
             return 0
 
         global childTileDownload
+        mypid = os.getpid()
         if not os.path.exists(os.path.join(self.cachedir, filename)):
-            if childTileDownload is None or not childTileDownload.is_alive():
+            if not mypid in childTileDownload or not childTileDownload[mypid].is_alive():
                 try:
-                    childTileDownload = multiprocessing.Process(target=self.downloadTile, args=(str(continent), str(filename)))
-                    childTileDownload.start()
+                    childTileDownload[mypid] = multiprocessing.Process(target=self.downloadTile, args=(str(continent), str(filename)))
+                    childTileDownload[mypid].start()
                 except Exception as ex:
-                    childTileDownload = None
+                    if mypid in childTileDownload:
+                        childTileDownload.pop(mypid)
                     return 0
-                '''print "Getting Tile"'''
+                '''print("Getting Tile")'''
             return 0
-        elif childTileDownload is not None and childTileDownload.is_alive():
-            '''print "Still Getting Tile"'''
+        elif mypid in childTileDownload and childTileDownload[mypid].is_alive():
+            '''print("Still Getting Tile")'''
             return 0
         # TODO: Currently we create a new tile object each time.
         # Caching is required for improved performance.
@@ -252,26 +274,18 @@ class SRTMDownloader():
         mp_util.child_close_fds()
         if self.offline == 1:
             return
-        conn = httplib.HTTPConnection(self.server)
-        conn.set_debuglevel(0)
         filepath = "%s%s%s" % \
                      (self.directory,continent,filename)
         try:
-            conn.request("GET", filepath)
-            r1 = conn.getresponse()
-            if r1.status==200:
-                '''print "status200 received ok"'''
-                data = r1.read()
+            data = self.getURIWithRedirect(filepath)
+            if data:
                 self.ftpfile = open(os.path.join(self.cachedir, filename), 'wb')
                 self.ftpfile.write(data)
                 self.ftpfile.close()
                 self.ftpfile = None
-            else:
-                '''print "oh no = status=%d %s" \
-                % (r1.status,r1.reason)'''
         except Exception as e:
             if not self.first_failure:
-                #print("SRTM Download failed: %s" % str(e))
+                print("SRTM Download failed %s on server %s" % (filepath, self.server))
                 self.first_failure = True
             pass
 
@@ -343,7 +357,7 @@ class SRTMTile:
         assert y < self.size, "y: %d<%d" % (y, self.size)
         # Same as calcOffset, inlined for performance reasons
         offset = x + self.size * (self.size - y - 1)
-        #print offset
+        #print(offset)
         value = self.data[offset]
         if value == -32768:
             return -1 # -32768 is a special value for areas with no data
@@ -354,20 +368,20 @@ class SRTMTile:
         """Get the altitude of a lat lon pair, using the four neighbouring
             pixels for interpolation.
         """
-        # print "-----\nFromLatLon", lon, lat
+        # print("-----\nFromLatLon", lon, lat)
         lat -= self.lat
         lon -= self.lon
-        # print "lon, lat", lon, lat
+        # print("lon, lat", lon, lat)
         if lat < 0.0 or lat >= 1.0 or lon < 0.0 or lon >= 1.0:
             raise WrongTileError(self.lat, self.lon, self.lat+lat, self.lon+lon)
         x = lon * (self.size - 1)
         y = lat * (self.size - 1)
-        # print "x,y", x, y
+        # print("x,y", x, y)
         x_int = int(x)
         x_frac = x - int(x)
         y_int = int(y)
         y_frac = y - int(y)
-        # print "frac", x_int, x_frac, y_int, y_frac
+        # print("frac", x_int, x_frac, y_int, y_frac)
         value00 = self.getPixelValue(x_int, y_int)
         value10 = self.getPixelValue(x_int+1, y_int)
         value01 = self.getPixelValue(x_int, y_int+1)
@@ -375,8 +389,8 @@ class SRTMTile:
         value1 = self._avg(value00, value10, x_frac)
         value2 = self._avg(value01, value11, x_frac)
         value  = self._avg(value1,  value2, y_frac)
-        # print "%4d %4d | %4d\n%4d %4d | %4d\n-------------\n%4d" % (
-        #        value00, value10, value1, value01, value11, value2, value)
+        # print("%4d %4d | %4d\n%4d %4d | %4d\n-------------\n%4d" % (
+        #        value00, value10, value1, value01, value11, value2, value))
         return value
 
 class SRTMOceanTile(SRTMTile):
@@ -392,7 +406,7 @@ class SRTMOceanTile(SRTMTile):
 class parseHTMLDirectoryListing(HTMLParser):
 
     def __init__(self):
-        #print "parseHTMLDirectoryListing.__init__"
+        #print("parseHTMLDirectoryListing.__init__")
         HTMLParser.__init__(self)
         self.title="Undefined"
         self.isDirListing = False
@@ -403,7 +417,7 @@ class parseHTMLDirectoryListing(HTMLParser):
         self.currHref=""
 
     def handle_starttag(self, tag, attrs):
-        #print "Encountered the beginning of a %s tag" % tag
+        #print("Encountered the beginning of a %s tag" % tag)
         if tag=="title":
             self.inTitle = True
         if tag == "a":
@@ -415,7 +429,7 @@ class parseHTMLDirectoryListing(HTMLParser):
 
 
     def handle_endtag(self, tag):
-        #print "Encountered the end of a %s tag" % tag
+        #print("Encountered the end of a %s tag" % tag)
         if tag=="title":
             self.inTitle = False
         if tag == "a":
@@ -429,9 +443,9 @@ class parseHTMLDirectoryListing(HTMLParser):
     def handle_data(self,data):
         if self.inTitle:
             self.title = data
-            '''print "title=%s" % data'''
+            '''print("title=%s" % data)'''
             if "Index of" in self.title:
-                #print "it is an index!!!!"
+                #print("it is an index!!!!")
                 self.isDirListing = True
         if self.inHyperLink:
             # We do not include parent directory in listing.
@@ -445,8 +459,11 @@ class parseHTMLDirectoryListing(HTMLParser):
 if __name__ == '__main__':
     downloader = SRTMDownloader()
     downloader.loadFileList()
-    tile = downloader.getTile(-36, 149)
-    print tile.getAltitudeFromLatLon(-35.282, 149.1287)
-
-
-
+    import time
+    start = time.time()
+    while time.time() - start < 30:
+        tile = downloader.getTile(-36, 149)
+        if tile:
+            print(tile.getAltitudeFromLatLon(-35.282, 149.1287))
+            break
+        time.sleep(0.2)

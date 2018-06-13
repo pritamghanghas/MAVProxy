@@ -14,12 +14,13 @@ class ParamState:
         self.mav_param_set = set()
         self.mav_param_count = 0
         self.param_period = mavutil.periodic_event(1)
-        self.fetch_one = 0
+        self.fetch_one = dict()
         self.mav_param = mav_param
         self.logdir = logdir
         self.vehicle_name = vehicle_name
         self.parm_file = parm_file
         self.fetch_set = None
+        self.xml_filepath = None
 
     def handle_mavlink_packet(self, master, m):
         '''handle an incoming mavlink packet'''
@@ -38,8 +39,8 @@ class ParamState:
             if m.param_count != -1:
                 self.mav_param_count = m.param_count
             self.mav_param[str(param_id)] = m.param_value
-            if self.fetch_one > 0:
-                self.fetch_one -= 1
+            if param_id in self.fetch_one and self.fetch_one[param_id] > 0:
+                self.fetch_one[param_id] -= 1
                 print("%s = %f" % (param_id, m.param_value))
             if added_new_parameter and len(self.mav_param_set) == m.param_count:
                 print("Received %u parameters" % m.param_count)
@@ -72,27 +73,39 @@ class ParamState:
         '''download XML files for parameters'''
         import multiprocessing
         files = []
-        for vehicle in ['APMrover2', 'ArduCopter', 'ArduPlane']:
-            url = 'http://autotest.diydrones.com/Parameters/%s/apm.pdef.xml' % vehicle
+        for vehicle in ['APMrover2', 'ArduCopter', 'ArduPlane', 'ArduSub', 'AntennaTracker']:
+            url = 'http://autotest.ardupilot.org/Parameters/%s/apm.pdef.xml' % vehicle
             path = mp_util.dot_mavproxy("%s.xml" % vehicle)
             files.append((url, path))
-            url = 'http://autotest.diydrones.com/%s-defaults.parm' % vehicle
-            path = mp_util.dot_mavproxy("%s-defaults.parm" % vehicle)
-            files.append((url, path))
+            url = 'http://autotest.ardupilot.org/%s-defaults.parm' % vehicle
+            if vehicle != 'AntennaTracker':
+                # defaults not generated for AntennaTracker ATM
+                path = mp_util.dot_mavproxy("%s-defaults.parm" % vehicle)
+                files.append((url, path))
         try:
             child = multiprocessing.Process(target=mp_util.download_files, args=(files,))
             child.start()
         except Exception as e:
             print(e)
 
+    def param_use_xml_filepath(self, filepath):
+        self.xml_filepath = filepath
+
     def param_help_tree(self):
         '''return a "help tree", a map between a parameter and its metadata.  May return None if help is not available'''
-        if self.vehicle_name is None:
-            print("Unknown vehicle type")
-            return None
-        path = mp_util.dot_mavproxy("%s.xml" % self.vehicle_name)
+        if self.xml_filepath is not None:
+            print("param: using xml_filepath=%s" % self.xml_filepath)
+            path = self.xml_filepath
+        else:
+            if self.vehicle_name is None:
+                print("Unknown vehicle type")
+                return None
+            path = mp_util.dot_mavproxy("%s.xml" % self.vehicle_name)
+            if not os.path.exists(path):
+                print("Please run 'param download' first (vehicle_name=%s)" % self.vehicle_name)
+                return None
         if not os.path.exists(path):
-            print("Please run 'param download' first (vehicle_name=%s)" % self.vehicle_name)
+            print("Param XML (%s) does not exist" % path)
             return None
         xml = open(path).read()
         from lxml import objectify
@@ -107,6 +120,9 @@ class ParamState:
                 n = p.get('name')
                 htree[n] = p
         return htree
+
+    def param_set_xml_filepath(self, args):
+        self.xml_filepath = args[0]
 
     def param_apropos(self, args):
         '''search parameter help for a keyword, list those parameters'''
@@ -137,6 +153,7 @@ class ParamState:
             return
 
         for h in args:
+            h = h.upper()
             if h in htree:
                 help = htree[h]
                 print("%s: %s\n" % (h, help.get('humanName')))
@@ -148,11 +165,18 @@ class ParamState:
                 except Exception as e:
                     pass
                 try:
-                    vchild = help.getchildren()[0]
-                    print("\nValues: ")
-                    for v in vchild.value:
-                        print("\t%s : %s" % (v.get('code'), str(v)))
+                    # The entry "values" has been blatted by a cython
+                    # function at this point, so we instead get the
+                    # "values" by offset rather than name.
+                    children = help.getchildren()
+                    vchild = children[0]
+                    values = vchild.getchildren()
+                    if len(values):
+                        print("\nValues: ")
+                        for v in values:
+                            print("\t%s : %s" % (v.get('code'), str(v)))
                 except Exception as e:
+                    print("Caught exception %s" % repr(e))
                     pass
             else:
                 print("Parameter '%s' not found in documentation" % h)
@@ -160,7 +184,7 @@ class ParamState:
     def handle_command(self, master, mpstate, args):
         '''handle parameter commands'''
         param_wildcard = "*"
-        usage="Usage: param <fetch|set|show|load|preload|forceload|diff|download|help>"
+        usage="Usage: param <fetch|save|set|show|load|preload|forceload|diff|download|help>"
         if len(args) < 1:
             print(usage)
             return
@@ -173,7 +197,9 @@ class ParamState:
                 for p in self.mav_param.keys():
                     if fnmatch.fnmatch(p, args[1].upper()):
                         master.param_fetch_one(p)
-                        self.fetch_one += 1
+                        if p not in self.fetch_one:
+                            self.fetch_one[p] = 0
+                        self.fetch_one[p] += 1
                         print("Requested parameter %s" % p)
         elif args[0] == "save":
             if len(args) < 2:
@@ -253,6 +279,8 @@ class ParamState:
             self.param_apropos(args[1:])
         elif args[0] == "help":
             self.param_help(args[1:])
+        elif args[0] == "set_xml_filepath":
+            self.param_set_xml_filepath(args[1:])
         elif args[0] == "show":
             if len(args) > 1:
                 pattern = args[1]
@@ -266,18 +294,22 @@ class ParamState:
 
 
 class ParamModule(mp_module.MPModule):
-    def __init__(self, mpstate):
+    def __init__(self, mpstate, **kwargs):
         super(ParamModule, self).__init__(mpstate, "param", "parameter handling", public = True)
         self.pstate = ParamState(self.mav_param, self.logdir, self.vehicle_name, 'mav.parm')
         self.add_command('param', self.cmd_param, "parameter handling",
                          ["<download|status>",
                           "<set|show|fetch|help|apropos> (PARAMETER)",
-                          "<load|save|diff> (FILENAME)"])
+                          "<load|save|diff> (FILENAME)",
+                          "<set_xml_filepath> (FILEPATH)"
+                         ])
         if self.continue_mode and self.logdir != None:
             parmfile = os.path.join(self.logdir, 'mav.parm')
             if os.path.exists(parmfile):
                 mpstate.mav_param.load(parmfile)
                 self.pstate.mav_param_set = set(self.mav_param.keys())
+
+        self.pstate.xml_filepath = kwargs.get("xml-filepath", None)
 
     def mavlink_packet(self, m):
         '''handle an incoming mavlink packet'''
@@ -292,6 +324,6 @@ class ParamModule(mp_module.MPModule):
         '''control parameters'''
         self.pstate.handle_command(self.master, self.mpstate, args)
 
-def init(mpstate):
+def init(mpstate, **kwargs):
     '''initialise module'''
-    return ParamModule(mpstate)
+    return ParamModule(mpstate, **kwargs)

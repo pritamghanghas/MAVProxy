@@ -13,6 +13,8 @@ import serial, Queue, select
 import traceback
 import select
 import shlex
+import platform
+import json
 
 from MAVProxy.modules.lib import textconsole
 from MAVProxy.modules.lib import rline
@@ -35,6 +37,9 @@ except Exception:
 if __name__ == '__main__':
       freeze_support()
 
+#The MAVLink version being used (None, "1.0", "2.0")
+mavversion = None
+
 class MPStatus(object):
     '''hold status information about the mavproxy'''
     def __init__(self):
@@ -45,7 +50,6 @@ class MPStatus(object):
         self.setup_mode = opts.setup
         self.mav_error = 0
         self.altitude = 0
-        self.last_altitude_announce = 0.0
         self.last_distance_announce = 0.0
         self.exit = False
         self.flightmode = 'MAV'
@@ -155,7 +159,13 @@ class MPState(object):
               MPSetting('target_system', int, 0, 'MAVLink target system', range=(0,255), increment=1),
               MPSetting('target_component', int, 0, 'MAVLink target component', range=(0,255), increment=1),
               MPSetting('state_basedir', str, None, 'base directory for logs and aircraft directories'),
-              MPSetting('allow_unsigned', bool, True, 'whether unsigned packets will be accepted')
+              MPSetting('allow_unsigned', bool, True, 'whether unsigned packets will be accepted'),
+
+              MPSetting('dist_unit', str, 'm', 'distance unit', choice=['m', 'nm', 'miles'], tab='Units'),
+              MPSetting('height_unit', str, 'm', 'height unit', choice=['m', 'feet']),
+              MPSetting('speed_unit', str, 'm/s', 'height unit', choice=['m/s', 'knots', 'mph']),
+
+              MPSetting('vehicle_name', str, '', 'Vehicle Name', tab='Vehicle'),
             ])
 
         self.completions = {
@@ -257,7 +267,21 @@ def cmd_watch(args):
     mpstate.status.watch = args[0]
     print("Watching %s" % mpstate.status.watch)
 
-def load_module(modname, quiet=False):
+def generate_kwargs(args):
+    kwargs = {}
+    module_components = args.split(":{", 1)
+    module_name = module_components[0]
+    if (len(module_components) == 2 and module_components[1].endswith("}")):
+        # assume json
+        try:
+            module_args = "{"+module_components[1]
+            kwargs = json.loads(module_args)
+        except ValueError as e:
+            print('Invalid JSON argument: {0} ({1})'.format(module_args,
+                                                           repr(e)))
+    return (module_name, kwargs)
+
+def load_module(modname, quiet=False, **kwargs):
     '''load a module'''
     modpaths = ['MAVProxy.modules.mavproxy_%s' % modname, modname]
     for (m,pm) in mpstate.modules:
@@ -269,11 +293,14 @@ def load_module(modname, quiet=False):
         try:
             m = import_package(modpath)
             reload(m)
-            module = m.init(mpstate)
+            module = m.init(mpstate, **kwargs)
             if isinstance(module, mp_module.MPModule):
                 mpstate.modules.append((module, m))
                 if not quiet:
-                    print("Loaded module %s" % (modname,))
+                    if kwargs:
+                        print("Loaded module %s with kwargs = %s" % (modname, kwargs))
+                    else:
+                        print("Loaded module %s" % (modname,))
                 return True
             else:
                 ex = "%s.init did not return a MPModule instance" % modname
@@ -311,12 +338,17 @@ def cmd_module(args):
         if len(args) < 2:
             print("usage: module load <name>")
             return
-        load_module(args[1])
+        (modname, kwargs) = generate_kwargs(args[1])
+        try:
+            load_module(modname, **kwargs)
+        except TypeError:
+            print("%s module does not support keyword arguments"% modname)
+            return
     elif args[0] == "reload":
         if len(args) < 2:
             print("usage: module reload <name>")
             return
-        modname = args[1]
+        (modname, kwargs) = generate_kwargs(args[1])
         pmodule = None
         for (m,pm) in mpstate.modules:
             if m.name == modname:
@@ -331,8 +363,11 @@ def cmd_module(args):
             except ImportError:
                 clear_zipimport_cache()
                 reload(pmodule)
-            if load_module(modname, quiet=True):
-                print("Reloaded module %s" % modname)
+            try:
+                if load_module(modname, quiet=True, **kwargs):
+                    print("Reloaded module %s" % modname)
+            except TypeError:
+                print("%s module does not support keyword arguments" % modname)
     elif args[0] == "unload":
         if len(args) < 2:
             print("usage: module unload <name>")
@@ -516,8 +551,9 @@ def process_master(m):
         sys.stdout.write(str(s))
         sys.stdout.flush()
         return
-
-    if m.first_byte and opts.auto_protocol:
+    
+    global mavversion
+    if m.first_byte and mavversion == None:
         m.auto_mavlink_version(s)
     msgs = m.mav.parse_buffer(s)
     if msgs:
@@ -542,7 +578,8 @@ def process_mavlink(slave):
     except socket.error:
         return
     try:
-        if slave.first_byte and opts.auto_protocol:
+        global mavversion
+        if slave.first_byte and mavversion == None:
             slave.auto_mavlink_version(buf)
         msgs = slave.mav.parse_buffer(buf)
     except mavutil.mavlink.MAVError as e:
@@ -575,11 +612,12 @@ def log_writer():
     '''log writing thread'''
     while True:
         mpstate.logfile_raw.write(mpstate.logqueue_raw.get())
-        while not mpstate.logqueue_raw.empty():
+        timeout = time.time() + 10
+        while not mpstate.logqueue_raw.empty() and time.time() < timeout:
             mpstate.logfile_raw.write(mpstate.logqueue_raw.get())
-        while not mpstate.logqueue.empty():
+        while not mpstate.logqueue.empty() and time.time() < timeout:
             mpstate.logfile.write(mpstate.logqueue.get())
-        if mpstate.settings.flushlogs:
+        if mpstate.settings.flushlogs or time.time() >= timeout:
             mpstate.logfile.flush()
             mpstate.logfile_raw.flush()
 
@@ -589,8 +627,6 @@ def log_paths():
     '''Returns tuple (logdir, telemetry_log_filepath, raw_telemetry_log_filepath)'''
     if opts.aircraft is not None:
         dirname = ""
-        if(opts.daemon):
-            dirname = '/var/log/'
         if opts.mission is not None:
             print(opts.mission)
             dirname += "%s/logs/%s/Mission%s" % (opts.aircraft, time.strftime("%Y-%m-%d"), opts.mission)
@@ -619,10 +655,7 @@ def log_paths():
         if not os.path.isabs(dir_path) and mpstate.settings.state_basedir is not None:
             dir_path = os.path.join(mpstate.settings.state_basedir,dir_path)
 
-        if(opts.daemon):
-            logdir = '/var/log'
-        else:
-            logdir = dir_path
+        logdir = dir_path
 
     mkdir_p(logdir)
     return (logdir,
@@ -644,11 +677,13 @@ def open_telemetry_logs(logpath_telem, logpath_telem_raw):
         print("Telemetry log: %s" % logpath_telem)
 
         #make sure there's enough free disk space for the logfile (>200Mb)
-        stat = os.statvfs(logpath_telem)
-        if stat.f_bfree*stat.f_bsize < 209715200:
-            print("ERROR: Not enough free disk space for logfile")
-            mpstate.status.exit = True
-            return
+        #statvfs doesn't work in Windows
+        if platform.system() != 'Windows':
+            stat = os.statvfs(logpath_telem)
+            if stat.f_bfree*stat.f_bsize < 209715200:
+                print("ERROR: Not enough free disk space for logfile")
+                mpstate.status.exit = True
+                return
 
         # use a separate thread for writing to the logfile to prevent
         # delays during disk writes (important as delays can be long if camera
@@ -688,7 +723,7 @@ def check_link_status():
         mpstate.status.heartbeat_error = True
     for master in mpstate.mav_master:
         if not master.linkerror and (tnow > master.last_message + 5 or master.portdead):
-            say("link %u down" % (master.linknum+1))
+            say("link %s down" % (mp_module.MPModule.link_label(master)))
             master.linkerror = True
 
 def send_heartbeat(master):
@@ -858,6 +893,33 @@ def run_script(scriptfile):
             mpstate.console.writeln("-> %s" % line)
         process_stdin(line)
     f.close()
+    
+def set_mav_version(mav10, mav20, autoProtocol, mavversionArg):
+    '''Set the Mavlink version based on commandline options'''
+#    if(mav10 == True or mav20 == True or autoProtocol == True):
+#        print("Warning: Using deprecated --mav10, --mav20 or --auto-protocol options. Use --mavversion instead")
+
+    #sanity check the options
+    if (mav10 == True or mav20 == True) and autoProtocol == True:
+        print("Error: Can't have [--mav10, --mav20] and --auto-protocol both True")
+        sys.exit(1)
+    if mav10 == True and mav20 == True:
+        print("Error: Can't have --mav10 and --mav20 both True")
+        sys.exit(1)
+    if mavversionArg is not None and (mav10 == True or mav20 == True or autoProtocol == True):
+        print("Error: Can't use --mavversion with legacy (--mav10, --mav20 or --auto-protocol) options")
+        sys.exit(1)
+
+    #and set the specific mavlink version (False = autodetect)
+    global mavversion
+    if mavversionArg == "1.0" or mav10 == True:
+        os.environ['MAVLINK09'] = '1'
+        mavversion = "1"
+    elif mavversionArg == "2.0" or mav20 == True:
+        os.environ['MAVLINK20'] = '1'
+        mavversion = "2"
+    else:
+        mavversion = None
 
 if __name__ == '__main__':
     from optparse import OptionParser
@@ -905,9 +967,10 @@ if __name__ == '__main__':
         action='append',
         default=[],
         help='Load the specified module. Can be used multiple times, or with a comma separated list')
-    parser.add_option("--mav09", action='store_true', default=False, help="Use MAVLink protocol 0.9")
+    parser.add_option("--mav10", action='store_true', default=False, help="Use MAVLink protocol 1.0")
     parser.add_option("--mav20", action='store_true', default=False, help="Use MAVLink protocol 2.0")
     parser.add_option("--auto-protocol", action='store_true', default=False, help="Auto detect MAVLink protocol version")
+    parser.add_option("--mavversion", type='choice', choices=['1.0', '2.0'] , help="Force MAVLink Version (1.0, 2.0). Otherwise autodetect version")
     parser.add_option("--nowait", action='store_true', default=False, help="don't wait for HEARTBEAT on startup")
     parser.add_option("-c", "--continue", dest='continue_mode', action='store_true', default=False, help="continue logs")
     parser.add_option("--dialect",  default="ardupilotmega", help="MAVLink dialect")
@@ -915,30 +978,40 @@ if __name__ == '__main__':
     parser.add_option("--moddebug",  type=int, help="module debug level", default=0)
     parser.add_option("--mission", dest="mission", help="mission name", default=None)
     parser.add_option("--daemon", action='store_true', help="run in daemon mode, do not start interactive shell")
+    parser.add_option("--non-interactive", action='store_true', help="do not start interactive shell")
     parser.add_option("--profile", action='store_true', help="run the Yappi python profiler")
     parser.add_option("--state-basedir", default=None, help="base directory for logs and aircraft directories")
     parser.add_option("--version", action='store_true', help="version information")
     parser.add_option("--default-modules", default="log,signing,wp,rally,fence,param,relay,tuneopt,arm,mode,calibration,rc,auxopt,misc,cmdlong,battery,terrain,output,adsb", help='default module list')
 
     (opts, args) = parser.parse_args()
+    if len(args) != 0:
+          print("ERROR: mavproxy takes no position arguments; got (%s)" % str(args))
+          sys.exit(1)
 
     # warn people about ModemManager which interferes badly with APM and Pixhawk
     if os.path.exists("/usr/sbin/ModemManager"):
         print("WARNING: You should uninstall ModemManager as it conflicts with APM and Pixhawk")
 
-    if opts.mav09:
-        os.environ['MAVLINK09'] = '1'
-    if opts.mav20:
-        os.environ['MAVLINK20'] = '1'
+    #set the Mavlink version, if required
+    set_mav_version(opts.mav10, opts.mav20, opts.auto_protocol, opts.mavversion)
+
     from pymavlink import mavutil, mavparm
     mavutil.set_dialect(opts.dialect)
 
     #version information
     if opts.version:
-        import pkg_resources
-        version = pkg_resources.require("mavproxy")[0].version
-        print "MAVProxy is a modular ground station using the mavlink protocol"
-        print "MAVProxy Version: " + version
+        #pkg_resources doesn't work in the windows exe build, so read the version file
+        try:
+            import pkg_resources
+            version = pkg_resources.require("mavproxy")[0].version
+        except:
+            start_script = os.path.join(os.environ['LOCALAPPDATA'], "MAVProxy", "version.txt")
+            f = open(start_script, 'r')
+            version = f.readline()
+
+        print("MAVProxy is a modular ground station using the mavlink protocol")
+        print("MAVProxy Version: " + version)
         sys.exit(1)
 
     # global mavproxy state
@@ -956,8 +1029,15 @@ if __name__ == '__main__':
         # modules/mavutil
         load_module('speech')
 
+    serial_list = mavutil.auto_detect_serial(preferred_list=[
+          '*FTDI*',
+          "*Arduino_Mega_2560*",
+          "*3D_Robotics*",
+          "*USB_to_UART*",
+          '*Ardu*',
+          '*PX4*',
+          '*FMU*'])
     if not opts.master:
-        serial_list = mavutil.auto_detect_serial(preferred_list=['*FTDI*',"*Arduino_Mega_2560*", "*3D_Robotics*", "*USB_to_UART*", '*PX4*', '*FMU*'])
         print('Auto-detected serial ports are:')
         for port in serial_list:
               print("%s" % port)
@@ -971,9 +1051,9 @@ if __name__ == '__main__':
     mpstate.rl = rline.rline("MAV> ", mpstate)
 
     def quit_handler(signum = None, frame = None):
-        #print 'Signal handler called with signal', signum
+        #print('Signal handler called with signal', signum)
         if mpstate.status.exit:
-            print 'Clean shutdown impossible, forcing an exit'
+            print('Clean shutdown impossible, forcing an exit')
             sys.exit(0)
         else:
             mpstate.status.exit = True
@@ -985,7 +1065,7 @@ if __name__ == '__main__':
         fatalsignals.append(signal.SIGQUIT)
     except Exception:
         pass
-    if opts.daemon: # SIGINT breaks readline parsing - if we are interactive, just let things die
+    if opts.daemon or opts.non_interactive: # SIGINT breaks readline parsing - if we are interactive, just let things die
         fatalsignals.append(signal.SIGINT)
 
     for sig in fatalsignals:
@@ -1004,6 +1084,9 @@ if __name__ == '__main__':
     if not opts.master and len(serial_list) == 1:
           print("Connecting to %s" % serial_list[0])
           mpstate.module('link').link_add(serial_list[0].device)
+    elif not opts.master and len(serial_list) > 1:
+          print("Error: multiple possible serial ports; use --master to select a single port")
+          sys.exit(1)
     elif not opts.master:
           wifi_device = '0.0.0.0:14550'
           mpstate.module('link').link_add(wifi_device)
@@ -1035,6 +1118,11 @@ if __name__ == '__main__':
     # call this early so that logdir is setup based on --aircraft
     (mpstate.status.logdir, logpath_telem, logpath_telem_raw) = log_paths()
 
+    for module in opts.load_module:
+        modlist = module.split(',')
+        for mod in modlist:
+            process_stdin('module load %s' % (mod))
+
     if not opts.setup:
         # some core functionality is in modules
         standard_modules = opts.default_modules.split(',')
@@ -1047,18 +1135,20 @@ if __name__ == '__main__':
     if opts.map:
         process_stdin('module load map')
 
-    for module in opts.load_module:
-        modlist = module.split(',')
-        for mod in modlist:
-            process_stdin('module load %s' % mod)
-
+    start_scripts = []
     if 'HOME' in os.environ and not opts.setup:
         start_script = os.path.join(os.environ['HOME'], ".mavinit.scr")
-        if os.path.exists(start_script):
-            run_script(start_script)
+        start_scripts.append(start_script)
     if 'LOCALAPPDATA' in os.environ and not opts.setup:
         start_script = os.path.join(os.environ['LOCALAPPDATA'], "MAVProxy", "mavinit.scr")
+        start_scripts.append(start_script)
+    if (mpstate.settings.state_basedir is not None and
+        opts.aircraft is not None):
+        start_script = os.path.join(mpstate.settings.state_basedir, opts.aircraft, "mavinit.scr")
+        start_scripts.append(start_script)
+    for start_script in start_scripts:
         if os.path.exists(start_script):
+            print("Running script (%s)" % (start_script))
             run_script(start_script)
 
     if opts.aircraft is not None:
@@ -1090,7 +1180,7 @@ if __name__ == '__main__':
     # up on exit
     while (mpstate.status.exit != True):
         try:
-            if opts.daemon:
+            if opts.daemon or opts.non_interactive:
                 time.sleep(0.1)
             else:
                 input_loop()

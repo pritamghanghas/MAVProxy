@@ -53,8 +53,7 @@ class LogModule(mp_module.MPModule):
             self.download_file.seek(m.ofs)
             self.download_ofs = m.ofs
         if m.count != 0:
-            data = m.data[:m.count]
-            s = ''.join(str(chr(x)) for x in data)
+            s = bytearray(m.data[:m.count])
             self.download_file.write(s)
             self.download_set.add(m.ofs // 90)
             self.download_ofs += m.count
@@ -72,6 +71,8 @@ class LogModule(mp_module.MPModule):
             self.download_file = None
             self.download_filename = None
             self.download_set = set()
+            self.master.mav.log_request_end_send(self.target_system,
+                                                 self.target_component)
             if len(self.download_queue):
                 self.log_download_next()
 
