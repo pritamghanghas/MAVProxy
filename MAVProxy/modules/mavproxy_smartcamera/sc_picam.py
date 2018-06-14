@@ -59,7 +59,7 @@ class PiCam:
         session_dir = os.path.join(self.photos_dir, str(self.instance))
         imgfilename = "img-%d.jpg" % (self.get_image_counter())
         complete_filename = os.path.join(session_dir,imgfilename)
-        self.session.get('http://127.0.0.1:5555/capture?filename=%s&lat=%f&lon=%f&alt=%f' % (complete_filename,self.vehicleLat, self.vehicleLon, self.vehicleAMSL))
+        self.session.get('http://127.0.0.1:5555/capture?filename=%s&lat=%.10f&lon=%.10f&alt=%.10f' % (complete_filename,self.vehicleLat, self.vehicleLon, self.vehicleAMSL))
         return self.latest_image
 
     # get_image_counter - returns number of images captured since startup
