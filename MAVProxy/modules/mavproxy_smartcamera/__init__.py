@@ -38,6 +38,7 @@ from MAVProxy.modules.lib.mp_settings import MPSetting
 # Own Headers
 from sc_webcam import SmartCameraWebCam
 from sc_SonyQX1 import SmartCamera_SonyQX
+from sc_picam import PiCam
 import sc_config
 
 #****************************************************************************
@@ -181,6 +182,11 @@ class SmartCameraModule(mp_module.MPModule):
             # Sony QX1
             if camera_type == 2:
                 self.__vRegisterQXCamera(i)
+
+            # Pi Camera Module
+            if camera_type == 3:
+                new_camera = PiCam(i)
+                self.camera_list = self.camera_list + [new_camera]
 
         # display number of cameras found
         print ("cameras found: %d" % len(self.camera_list))
@@ -500,7 +506,7 @@ class SmartCameraModule(mp_module.MPModule):
             print ("Got Message camera_status")
         if mtype == "CAMERA_FEEDBACK":
             print ("Got Message camera_feedback")
-            '''self.__vCmdCamTrigger(m)'''
+            self.__vCmdCamTrigger(m)
         if mtype == "COMMAND_LONG":
             if m.command == mavutil.mavlink.MAV_CMD_DO_DIGICAM_CONFIGURE:
                 print ("Got Message Digicam_configure")
